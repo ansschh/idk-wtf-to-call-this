@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import dynamic from "next/dynamic";
+import CodeMirror, { ReactCodeMirrorRef } from '@uiw/react-codemirror'; // Import ReactCodeMirrorRef
 import { doc, getDoc, updateDoc, serverTimestamp, collection, addDoc, getDocs, query, where, orderBy, deleteDoc } from "firebase/firestore";
 import { db, storage } from "@/lib/firebase";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { authenticateWithFirebase } from "@/lib/firebase-auth";
+import ChatWindow from './ChatWindow'; // Use the correct path
+import { EditorView } from '@codemirror/view';
+import ReactDOM from 'react-dom';
+import { EditorState } from '@codemirror/state'; // Import EditorState if using onCreateEditor state
 import {
   Loader, Save, Download, Play, Edit, Eye, Layout, Menu,
   FileText, Folder, FolderOpen, RefreshCw, ChevronLeft, ChevronRight, ChevronDown,
@@ -11,15 +16,13 @@ import {
   X, Upload, FileUp, Trash, Plus, Edit2, Trash2, Copy
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import CodeMirror from '@uiw/react-codemirror';
 import { StreamLanguage } from '@codemirror/language';
 import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { ChatProvider, useChat } from '../context/ChatContext';
 import ChatPanel from './ChatWindow';
 import HeaderChatButton from './HeaderChatButton';
-import { EditorView } from '@codemirror/view';
 import { compileLatex } from "@/services/latexService";
-import SuggestionOverlay from './SuggestionOverlay';
+import SuggestionOverlay, { SuggestionData } from './SuggestionOverlay';
 
 // Import components
 import EnhancedSidebar from '../components/EnhancedSidebar';
@@ -179,11 +182,23 @@ const ResizablePanel = ({
   resizeFrom = 'both' // Control which side has resize handles
 }) => {
   const [size, setSize] = useState(initialSize);
-  const containerRef = useRef(null);
+  const editorRef = useRef<{ view?: EditorView } | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null); // <--- ADD THIS LINE
   const isResizing = useRef(false);
+  const contentRef = useRef<HTMLDivElement>(null); // Make sure this is also typed if possible
+
   const startPos = useRef(0);
   const startSize = useRef(0);
   const rafId = useRef(null);
+  let cmInstance: any = null;
+
+  useEffect(() => {
+    if (editorRef.current && !cmInstance) {
+      cmInstance = editorRef.current;
+      console.log("CodeMirror instance captured:", cmInstance);
+    }
+  }, [editorRef.current]);
+
 
   // Update size if initialSize changes and we're not currently resizing
   useEffect(() => {
@@ -243,6 +258,7 @@ const ResizablePanel = ({
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
   };
+
 
   const handleMouseMove = useCallback((e) => {
     if (!isResizing.current) return;
@@ -437,8 +453,6 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   const [error, setError] = useState(null);
   const [projectData, setProjectData] = useState(null);
   const [files, setFiles] = useState([]);
-  const [code, setCode] = useState("");
-  const [isSaved, setIsSaved] = useState(true);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [viewMode, setViewMode] = useState("split");
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
@@ -453,11 +467,18 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   const [currentFileName, setCurrentFileName] = useState("");
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
+  const editorRef = useRef<{ view?: EditorView } | null>(null);
+  
 
   // Chat and suggestion state
   const { isChatOpen, openChat, closeChat, toggleChat } = useChat();
-  const [activeSuggestion, setActiveSuggestion] = useState(null);
+  const [activeSuggestion, setActiveSuggestion] = useState<{
+    text: string;
+    range?: { start: number, end: number };
+    fileId?: string;
+  } | null>(null);
   const [chatFileList, setChatFileList] = useState([]);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // File tree specific state
   const [expandedFolders, setExpandedFolders] = useState({});
@@ -471,20 +492,114 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   // State and refs for resizing
   const [sidebarWidth, setSidebarWidth] = useState(250);
   const [editorRatio, setEditorRatio] = useState(0.5); // Editor takes 50% of available space in split mode
-  const containerRef = useRef(null);
+  // State for your editor’s content
+
+  const [code, setCode] = useState<string>("");
+  const [isSaved, setIsSaved] = useState<boolean>(true);
+  const [isEditorReady, setIsEditorReady] = useState(false); // <--- ADD THIS LINE
+
+  const [modalSuggestion, setModalSuggestion] = useState<{
+    suggestionData: SuggestionData;
+    explanation: string;
+    originalContent: string;
+  } | null>(null);
+
+  const handleShowSuggestion = useCallback((
+    suggestionData: SuggestionData,
+    explanation: string,
+    originalContent: string
+  ) => {
+    console.log("[LatexEditor] Showing suggestion modal.");
+    setModalSuggestion({ suggestionData, explanation, originalContent });
+  }, []); // Dependencies might be needed if it uses other state/props
+  
+  const handleCloseSuggestion = useCallback(() => {
+    console.log("[LatexEditor] Closing suggestion modal.");
+    setModalSuggestion(null);
+  }, []);
+  
+  const handleApplyAndCloseSuggestion = useCallback((appliedFullContent: string) => {
+    console.log("[LatexEditor] Applying suggestion from modal.");
+  
+    // Get the current view instance
+    const view = editorRef.current?.view;
+    if (!view) {
+      console.error("Editor view missing, cannot sync state after apply.");
+      showNotification("Error applying suggestion (editor unavailable)", "error");
+      setModalSuggestion(null); // Close modal anyway
+      return;
+    }
+  
+    // Update React state AFTER the overlay has modified the editor
+    // It's crucial the overlay finishes its transaction first
+    // We trust the overlay passed the correct full content
+    setCode(appliedFullContent);
+    setIsSaved(false);
+    showNotification("Suggestion applied");
+    setModalSuggestion(null); // Close the modal
+  
+    // Optional: Trigger auto-save or auto-compile
+    // if (autoCompile) { handleCompile(); }
+  
+  }, [/* dependencies like setCode, setIsSaved, showNotification, autoCompile */]); // Add dependencies
+
+
+
+
+
+
+
+
+
   const contentRef = useRef(null);
   const isResizingSidebar = useRef(false);
   const isResizingEditor = useRef(false);
   const resizeStartX = useRef(0);
   const initialSidebarWidth = useRef(0);
-
-  const editorRef = useRef(null);
   const saveButtonRef = useRef(null);
   const compileButtonRef = useRef(null);
   const contextMenuRef = useRef(null);
   const fileInputRef = useRef(null);
   const dragNode = useRef(null);
   const dragOverNode = useRef(null);
+
+  const handleEditorCreate = useCallback((view: EditorView, state: EditorState) => {
+    console.log("[LatexEditor] handleEditorCreate: Editor view instance CAPTURED.");
+    // Store the view instance in the ref
+    editorRef.current = { view: view };
+    setIsEditorReady(true); // Mark editor as ready
+  }, []); // Empty dependency array
+
+useEffect(() => {
+  console.log("[LatexEditor Effect] editorRef.current?.view value:", editorRef.current?.view);
+  // You could add more logic here to see if it becomes null/undefined later
+}, [editorRef.current?.view]); // Run when the view instance itself changes
+
+  /**
+   * Called when the user applies a suggestion from the SuggestionOverlay component.
+   * @param {string} appliedFullContent The full content of the suggestion that was applied
+   *
+   * This function can be used to update local state, mark the document as unsaved, or trigger
+   * auto-compilation/auto-save if the user has enabled those features.
+   *
+   * If the active suggestion state is managed in this component, it should be cleared here.
+   * If the user has enabled auto-save/auto-compile, that should be triggered here as well.
+   */
+  const handleApplySuggestionCallback = (appliedFullContent: string) => {
+    console.log("[LatexEditor] Suggestion application confirmed by ChatWindow overlay.");
+  
+    // Get the current content *after* the overlay modified the editor
+    const currentEditorContent = editorRef.current?.view?.state.doc.toString() ?? appliedFullContent;
+    setCode(currentEditorContent); // Sync React state with editor
+  
+    setIsSaved(false); // Mark as unsaved
+    showNotification("Suggestion applied");
+  
+    // Optional: Trigger auto-save or auto-compile
+    // if (autoCompile) { handleCompile(); }
+  };
+
+
 
   // Add performance styles
   useEffect(() => {
@@ -1421,12 +1536,19 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
     }
   };
 
-
-  // Handle applying a suggestion from chat
+  /**
+ * A robust utility for safely applying editor changes with multiple strategies
+ * This can handle various edit scenarios including insertions, deletions, and replacements
+ */
   const safelyApplyEditorChanges = (
     editorRef: React.RefObject<any>,
     suggestion: string,
-    range?: { start: number, end: number }
+    range?: { start: number, end: number },
+    changeContext?: {
+      type: 'insert' | 'replace' | 'delete',
+      targetDescription?: string,
+      lineNumbers?: number[]
+    }
   ): boolean => {
     if (!editorRef.current) {
       console.error("Editor reference is not available");
@@ -1434,117 +1556,404 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
     }
 
     try {
-      let state = editorRef.current.state;
+      // Get the current editor instance
+      const editor = editorRef.current;
 
-      // If state isn't available, the editor might not be initialized properly
-      if (!state) {
-        console.error("Editor state is not available");
+      // Get current document content
+      let currentContent = '';
+      let view, state;
+
+      // Try different methods to access content based on editor type
+      if (editor.view && editor.view.state) {
+        view = editor.view;
+        state = view.state;
+        currentContent = state.doc.toString();
+      } else if (typeof editor.getValue === 'function') {
+        currentContent = editor.getValue();
+      } else if (editor.state && editor.state.doc) {
+        state = editor.state;
+        currentContent = state.doc.toString();
+      }
+
+      if (!currentContent) {
+        console.error("Could not retrieve document content");
         return false;
       }
 
-      let docLength = state.doc?.toString().length || 0;
+      console.log("Document size:", currentContent.length, "bytes");
 
-      // Determine where to insert
-      let from = range?.start || 0;
-      let to = range?.end || from;
+      // If we already have a precise range, use it directly
+      if (range && typeof range.start === 'number' && typeof range.end === 'number') {
+        console.log(`Using provided range: ${range.start}-${range.end}`);
+      }
+      // Otherwise, try to determine where changes should be applied
+      else {
+        console.log("No exact range provided, determining insertion/modification point");
 
-      // Ensure bounds are valid
-      from = Math.max(0, Math.min(from, docLength));
-      to = Math.max(from, Math.min(to, docLength));
+        // Strategy 1: Line number based positioning
+        if (changeContext?.lineNumbers && changeContext.lineNumbers.length > 0) {
+          const lines = currentContent.split('\n');
+          const startLine = Math.max(0, Math.min(changeContext.lineNumbers[0] - 1, lines.length - 1));
+          const endLine = changeContext.lineNumbers.length > 1
+            ? Math.max(startLine, Math.min(changeContext.lineNumbers[1] - 1, lines.length - 1))
+            : startLine;
 
-      // Check what API is available and use the appropriate method
-      if (editorRef.current.dispatch && state.update) {
-        // CodeMirror 6 style
-        let transaction = state.update({
+          // Calculate character positions from line numbers
+          let charPos = 0;
+          let startPos = 0;
+          let endPos = 0;
+
+          for (let i = 0; i < lines.length; i++) {
+            if (i === startLine) startPos = charPos;
+            if (i === endLine) {
+              endPos = charPos + lines[i].length;
+              break;
+            }
+            charPos += lines[i].length + 1; // +1 for the newline character
+          }
+
+          range = { start: startPos, end: endPos };
+          console.log(`Applied line number strategy: Lines ${startLine + 1}-${endLine + 1} => Positions ${startPos}-${endPos}`);
+        }
+        // Strategy 2: Pattern matching based on target description
+        else if (changeContext?.targetDescription) {
+          // Parse target description for patterns
+          const patterns = extractPatternsFromDescription(changeContext.targetDescription);
+          console.log("Extracted patterns:", patterns);
+
+          if (patterns.length > 0) {
+            // Find the best match in the document
+            const match = findBestPatternMatch(currentContent, patterns);
+            if (match) {
+              if (changeContext.type === 'insert') {
+                // For insertion, position at the match end
+                range = { start: match.end, end: match.end };
+                console.log(`Insert after match "${match.text}" at position ${match.end}`);
+              } else {
+                // For replace/delete, use the match range
+                range = { start: match.start, end: match.end };
+                console.log(`Replace/delete match "${match.text}" at positions ${match.start}-${match.end}`);
+              }
+            }
+          }
+        }
+
+        // Strategy 3: Content analysis for LaTeX sectioning commands
+        if (!range && changeContext?.targetDescription?.includes('section')) {
+          range = findSectionPosition(currentContent, changeContext.targetDescription);
+          if (range) {
+            console.log(`Found section position based on description: ${range.start}-${range.end}`);
+          }
+        }
+
+        // Fallback strategy: Try to determine from the suggestion itself
+        if (!range) {
+          range = inferPositionFromSuggestion(currentContent, suggestion);
+          if (range) {
+            console.log(`Inferred position from suggestion content: ${range.start}-${range.end}`);
+          }
+        }
+
+        // Last resort fallback - append to document
+        if (!range) {
+          const insertPosition = currentContent.lastIndexOf('\\end{document}');
+          if (insertPosition > 0) {
+            range = {
+              start: insertPosition,
+              end: insertPosition
+            };
+            console.log(`Last resort: inserting before \\end{document} at position ${insertPosition}`);
+          } else {
+            range = {
+              start: currentContent.length,
+              end: currentContent.length
+            };
+            console.log(`Last resort: appending to document end at position ${currentContent.length}`);
+          }
+        }
+      }
+
+      // Now apply the change based on the determined range
+      const docLength = currentContent.length;
+      const from = Math.max(0, Math.min(range.start, docLength));
+      const to = Math.max(from, Math.min(range.end, docLength));
+
+      console.log(`Applying change: from=${from}, to=${to}, content length=${suggestion.length}`);
+
+      // For @uiw/react-codemirror or CodeMirror 6
+      if (view && state) {
+        const transaction = state.update({
           changes: {
             from,
             to,
             insert: suggestion
           }
         });
+        view.dispatch(transaction);
+        console.log("Change applied using CodeMirror 6 API");
+        return true;
+      }
+      // For direct state manipulation
+      else if (editor.dispatch && editor.state) {
+        const transaction = editor.state.update({
+          changes: {
+            from,
+            to,
+            insert: suggestion
+          }
+        });
+        editor.dispatch(transaction);
+        console.log("Change applied using editor state API");
+        return true;
+      }
+      // For CodeMirror 5 style API
+      else if (typeof editor.replaceRange === 'function') {
+        const fromPos = editor.posFromIndex(from);
+        const toPos = editor.posFromIndex(to);
+        editor.replaceRange(suggestion, fromPos, toPos);
+        console.log("Change applied using CodeMirror 5 API");
+        return true;
+      }
+      // For basic string manipulation and setValue
+      else if (typeof editor.setValue === 'function') {
+        const newContent =
+          currentContent.substring(0, from) +
+          suggestion +
+          currentContent.substring(to);
+        editor.setValue(newContent);
+        console.log("Change applied using setValue API");
+        return true;
+      }
 
-        editorRef.current.dispatch(transaction);
-        return true;
-      }
-      else if (editorRef.current.replaceRange) {
-        // CodeMirror 5 style
-        editorRef.current.replaceRange(
-          suggestion,
-          editorRef.current.posFromIndex(from),
-          editorRef.current.posFromIndex(to)
-        );
-        return true;
-      }
-      else if (typeof editorRef.current.setValue === 'function') {
-        // Simple editor with setValue method
-        // This is less precise but at least applies the change
-        editorRef.current.setValue(suggestion);
-        return true;
-      }
-      else {
-        console.error("No suitable method found to update editor content");
-        return false;
-      }
+      console.error("No suitable editor API found to apply changes");
+      return false;
     } catch (error) {
       console.error("Error applying editor changes:", error);
       return false;
     }
   };
 
-  const handleApplySuggestion = (suggestion: string, range?: { start: number; end: number }, fileId?: string) => {
-    // If suggestion is for a different file, switch to that file first
-    if (fileId && fileId !== currentFileId) {
-      handleFileSelect(fileId).then(() => {
-        // Store the suggestion to apply after file is loaded
-        setActiveSuggestion({
-          text: suggestion,
-          range,
-          fileId
-        });
+  /**
+   * Extract key patterns from a target description
+   */
+  function extractPatternsFromDescription(description: string): string[] {
+    const patterns: string[] = [];
+
+    // Look for common LaTeX structural elements
+    const sectionMatch = description.match(/(?:after|before|in)\s+the\s+([a-zA-Z0-9]+)\s+section/i);
+    if (sectionMatch) {
+      patterns.push(`\\section{${sectionMatch[1]}`, `\\section{${sectionMatch[1].toLowerCase()}`, `\\section{${sectionMatch[1].toUpperCase()}`);
+    }
+
+    // Look for specific line indicators
+    const lineMatch = description.match(/line\s+(\d+)/i);
+    if (lineMatch) {
+      patterns.push(`LINE_NUMBER_${lineMatch[1]}`);
+    }
+
+    // Look for specific content mentions
+    const contentMatches = description.match(/["']([^"']+)["']/g);
+    if (contentMatches) {
+      contentMatches.forEach(match => {
+        const cleanMatch = match.replace(/["']/g, '');
+        if (cleanMatch.length > 3) { // Only use sufficiently unique strings
+          patterns.push(cleanMatch);
+        }
       });
+    }
+
+    // Check for specific LaTeX commands
+    const commandMatch = description.match(/\\([a-zA-Z]+)/g);
+    if (commandMatch) {
+      patterns.push(...commandMatch);
+    }
+
+    return patterns;
+  }
+
+  /**
+   * Find the best matching pattern in the document
+   */
+  function findBestPatternMatch(content: string, patterns: string[]): { start: number, end: number, text: string } | null {
+    let bestMatch = null;
+
+    for (const pattern of patterns) {
+      // Handle special case for line numbers
+      if (pattern.startsWith('LINE_NUMBER_')) {
+        const lineNum = parseInt(pattern.substring(12));
+        const lines = content.split('\n');
+        if (lineNum > 0 && lineNum <= lines.length) {
+          let charPos = 0;
+          for (let i = 0; i < lineNum - 1; i++) {
+            charPos += lines[i].length + 1;
+          }
+          const lineEnd = charPos + lines[lineNum - 1].length;
+          return {
+            start: charPos,
+            end: lineEnd,
+            text: lines[lineNum - 1]
+          };
+        }
+        continue;
+      }
+
+      const index = content.indexOf(pattern);
+      if (index !== -1) {
+        return {
+          start: index,
+          end: index + pattern.length,
+          text: pattern
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Find a section position based on description
+   */
+  function findSectionPosition(content: string, description: string): { start: number, end: number } | null {
+    // Extract section name from description
+    const sectionNameMatch = description.match(/(?:after|before|in)\s+the\s+([a-zA-Z0-9]+)(?:\s+section|\s+part|\s+chapter)?/i);
+    const positionType = description.match(/\b(after|before|in|at the end of|at the beginning of)\b/i)?.[1]?.toLowerCase() || 'after';
+
+    if (!sectionNameMatch) return null;
+
+    const sectionName = sectionNameMatch[1].toLowerCase();
+
+    // Search for various section command patterns
+    const sectionPatterns = [
+      `\\section{${sectionName}}`,
+      `\\section{${sectionName.charAt(0).toUpperCase() + sectionName.slice(1)}}`,
+      `\\subsection{${sectionName}}`,
+      `\\subsection{${sectionName.charAt(0).toUpperCase() + sectionName.slice(1)}}`,
+      `\\subsubsection{${sectionName}}`,
+      `\\chapter{${sectionName}}`,
+      `\\part{${sectionName}}`
+    ];
+
+    // Look for each potential pattern
+    for (const pattern of sectionPatterns) {
+      const sectionIndex = content.toLowerCase().indexOf(pattern.toLowerCase());
+      if (sectionIndex !== -1) {
+        // Found the section, now determine where to position based on requested position
+        if (positionType === 'before') {
+          return { start: sectionIndex, end: sectionIndex };
+        } else if (positionType === 'in' || positionType === 'at the beginning of') {
+          // Find the actual end of the section command
+          const cmdEndIndex = content.indexOf('}', sectionIndex);
+          return { start: cmdEndIndex + 1, end: cmdEndIndex + 1 };
+        } else { // 'after' or 'at the end of'
+          // Find the next section or end of document
+          const nextSectionIndex = findNextSectionCommand(content, sectionIndex + pattern.length);
+          if (nextSectionIndex !== -1) {
+            return { start: nextSectionIndex, end: nextSectionIndex };
+          } else {
+            // If no next section, just go to the next line after this section
+            const eolIndex = content.indexOf('\n', sectionIndex);
+            return { start: eolIndex + 1, end: eolIndex + 1 };
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Find the next section command after a given position
+   */
+  function findNextSectionCommand(content: string, startPos: number): number {
+    const sectionCommands = ['\\section{', '\\subsection{', '\\subsubsection{', '\\chapter{', '\\part{'];
+
+    let earliest = -1;
+    for (const cmd of sectionCommands) {
+      const pos = content.indexOf(cmd, startPos);
+      if (pos !== -1 && (earliest === -1 || pos < earliest)) {
+        earliest = pos;
+      }
+    }
+
+    return earliest;
+  }
+
+  /**
+   * Try to infer position from the suggestion content itself
+   */
+  function inferPositionFromSuggestion(content: string, suggestion: string): { start: number, end: number } | null {
+    // If suggestion is a section command, look for appropriate placement
+    if (suggestion.trim().startsWith('\\section') || suggestion.trim().startsWith('\\subsection')) {
+      // Look for the last section command in the document
+      const sectionCommands = ['\\section{', '\\subsection{', '\\subsubsection{', '\\chapter{', '\\part{'];
+      let lastSectionPos = -1;
+
+      for (const cmd of sectionCommands) {
+        const lastPos = content.lastIndexOf(cmd);
+        if (lastPos > lastSectionPos) {
+          lastSectionPos = lastPos;
+        }
+      }
+
+      if (lastSectionPos !== -1) {
+        // Find the end of this section
+        const eolIndex = content.indexOf('\n', lastSectionPos);
+        return { start: eolIndex + 1, end: eolIndex + 1 };
+      }
+    }
+
+    // Look for common content overlaps between the document and suggestion
+    if (suggestion.length > 30) {
+      const lines = suggestion.split('\n');
+      for (const line of lines) {
+        if (line.trim().length > 20) {
+          const index = content.indexOf(line);
+          if (index !== -1) {
+            return { start: index, end: index + line.length };
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  const handleApplySuggestion = (suggestionText: string) => {
+    console.log("Suggestion text length:", suggestionText?.length || 0);
+
+    // Check if the content is valid
+    if (!suggestionText || suggestionText.trim() === '') {
+      console.error("Empty suggestion content received");
+      showNotification("Cannot apply empty suggestion", "error");
       return;
     }
 
-    // For current file, apply directly
-    if (suggestion && editorRef.current) {
-      try {
-        // Access the editor instance from the wrapper
-        const success = safelyApplyEditorChanges(editorRef, suggestion, range);
+    // Ensure content isn't truncated
+    const currentLength = code.length;
+    if (suggestionText.length < currentLength * 0.8 && currentLength > 1000) {
+      console.error("Content appears truncated:",
+        `Current: ${currentLength} chars, Suggestion: ${suggestionText.length} chars`);
+      showNotification("Cannot apply possibly truncated content", "error");
+      return;
+    }
 
-        if (success) {
-          // Clear active suggestion
-          setActiveSuggestion(null);
-
-          // Mark as unsaved
-          setIsSaved(false);
-
-          showNotification('Suggestion applied successfully');
-        } else {
-          // If direct editor manipulation failed, fallback to updating the code state
-          console.log("Direct editor update failed, using state update fallback");
-
-          // Update the code state directly
-          let newCode = code;
-          if (range) {
-            const start = Math.max(0, Math.min(range.start, code.length));
-            const end = Math.max(start, Math.min(range.end, code.length));
-            newCode = code.substring(0, start) + suggestion + code.substring(end);
-          } else {
-            newCode = suggestion;
-          }
-
-          // Update state
-          setCode(newCode);
-          setIsSaved(false);
-          setActiveSuggestion(null);
-          showNotification('Suggestion applied successfully');
-        }
-      } catch (error) {
-        console.error("Error applying suggestion:", error);
-        showNotification('Failed to apply suggestion', 'error');
+    // Apply the suggestion
+    try {
+      // Process escaped characters properly
+      let processedText = suggestionText;
+      if (suggestionText.includes('\\n')) {
+        processedText = suggestionText.replace(/\\n/g, '\n');
       }
+
+      setCode(processedText);
+      setIsSaved(false);
+      showNotification("Suggestion applied successfully");
+    } catch (error) {
+      console.error("Error applying suggestion:", error);
+      showNotification("Failed to apply suggestion", "error");
     }
   };
+
 
 
   useEffect(() => {
@@ -1816,6 +2225,37 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
     } else {
       showNotification("Could not download PDF - try compiling first", "error");
     }
+  };
+
+  // Add this helper function to get original text
+  const getOriginalText = (suggestion: { text: string; range?: { start: number, end: number }; fileId?: string }) => {
+    if (!suggestion.range) return '';
+
+    try {
+      const docText = code;
+      if (docText) {
+        const lines = docText.split('\n');
+        const { start, end } = suggestion.range;
+
+        if (start === end) {
+          return lines[start] || '';
+        }
+
+        return lines.slice(start, end + 1).join('\n');
+      }
+    } catch (error) {
+      console.error("Error getting original text:", error);
+    }
+
+    return '';
+  };
+
+  // And this helper to get file name by ID
+  const getFileNameById = (fileId?: string) => {
+    if (!fileId) return '';
+
+    const file = files.find(f => f.id === fileId);
+    return file?._name_ || file?.name || '';
   };
 
   // Helper function to show notifications
@@ -2200,39 +2640,22 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
         )}
 
         {/* Main editor area - Ensure left border is 0 width */}
-        <div className="flex-1 overflow-hidden h-full" ref={contentRef}>
-          {/* Active suggestion overlay */}
-          {activeSuggestion && (
-            <div className="absolute inset-0 z-30 bg-black/20 flex items-center justify-center">
-              <div className="bg-gray-800 p-6 rounded-lg shadow-xl max-w-xl">
-                <SuggestionOverlay
-                  suggestion={activeSuggestion}
-                  onApply={handleApplySuggestion}
-                  onReject={() => setActiveSuggestion(null)}
-                  editorRef={editorRef}
-                />
-              </div>
-            </div>
-          )}
+        <div className="flex-1 overflow-hidden h-full relative" ref={contentRef}>
 
           {/* Code-only view - Apply specific styling for CodeMirror to fill vertical space */}
           {viewMode === "code" && !isImageView && (
             <div className="w-full h-full bg-gray-900 overflow-hidden">
               <CodeMirror
-                ref={(el) => {
-                  // Only assign if the ref changed and is not null
-                  if (el && el !== editorRef.current) {
-                    editorRef.current = el;
-                    console.log("Editor reference updated", el);
-                  }
-                }}
+                // ref={editorRef}  // Make sure this ref is defined properly
                 value={code}
                 width="100%"
                 height="100%"
+                onCreateEditor={handleEditorCreate}
                 extensions={[
                   StreamLanguage.define(stex),
                   latexTheme,
-                  editorSetup
+                  editorSetup,
+                  EditorView.lineWrapping // Optional: enable line wrapping
                 ]}
                 onChange={handleCodeChange}
                 theme="dark"
@@ -2274,15 +2697,17 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
               >
                 <div className="absolute inset-0 overflow-hidden">
                   <CodeMirror
-                    ref={editorRef}
+                    // ref={editorRef}
                     value={code}
                     width="100%"
                     height="100%"
                     extensions={[
                       StreamLanguage.define(stex),
                       latexTheme,
-                      editorSetup
+                      editorSetup,
+                      EditorView.lineWrapping
                     ]}
+                    onCreateEditor={handleEditorCreate} // Use callback
                     onChange={handleCodeChange}
                     theme="dark"
                     className="h-full overflow-auto" // Added overflow-auto
@@ -2444,19 +2869,23 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
             onClose={closeChat}
             projectId={projectId}
             userId={userId}
+            editorView={isEditorReady ? editorRef.current?.view ?? null : null}
             currentFileName={currentFileName}
             currentFileId={currentFileId}
-            currentFileContent={code}
+            currentFileContent={code} // Pass the current code state
             projectFiles={chatFileList}
-            onSuggestionApply={handleApplySuggestion}
-            onSuggestionReject={() => setActiveSuggestion(null)}
+            onShowSuggestion={handleShowSuggestion}
+            onSuggestionReject={() => console.log("[LatexEditor] Suggestion rejected.")}
+            onSuggestionApply={handleApplySuggestionCallback}
+            onSuggestionReject={() => console.log("Suggestion rejected")}
             onFileSelect={handleFileSelect}
             onFileUpload={handleChatFileUpload}
             initialWidth={350}
             minWidth={280}
             maxWidth={600}
-            className="z-10" // Add z-index to ensure chat stays on top
+            className="z-10"
           />
+
         )}
       </div>
 
@@ -2599,6 +3028,28 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
           </div>
         </div>
       )}
+
+
+      {/* --- Render Suggestion Modal via Portal --- */}
+     {modalSuggestion && isEditorReady && editorRef.current?.view && typeof document !== 'undefined' && (
+       ReactDOM.createPortal(
+         <SuggestionOverlay
+           key={modalSuggestion.suggestionData.fileId || 'modal'} // Add a key
+           suggestion={modalSuggestion.suggestionData}
+           explanation={modalSuggestion.explanation}
+           originalContent={modalSuggestion.originalContent}
+           onApply={handleApplyAndCloseSuggestion} // Connect to apply/close handler
+           onReject={handleCloseSuggestion}       // Connect to close handler
+           editorView={editorRef.current.view} // Pass the view instance
+           fileName={currentFileName || modalSuggestion.suggestionData.fileId}
+         />,
+         document.body // Render directly into the body
+       )
+     )}
+     {/* --- End Modal Rendering --- */}
+
+
+
     </div>
   );
 };

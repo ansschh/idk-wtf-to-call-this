@@ -1,11 +1,16 @@
 // components/ChatWindow.tsx
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import chatService from '@/services/chatService';
 import {
-  X, Send, Plus, Clock, ChevronDown, Paperclip, File, MessageSquare,
-  Folder, // Added missing Folder import
-  Download, Check, Loader
+  X, Code, Send, Plus, Clock, ChevronDown, Paperclip, File, MessageSquare,
+  Folder,
+  Download, Check, Loader, Edit // <--- ADD IT HERE
 } from 'lucide-react';
+import DiffViewer from './DiffViewer'; // Import the DiffViewer
+import SuggestionOverlay, { SuggestionData } from './SuggestionOverlay';
 import ResizablePanel from './ResizablePanel';
+import { DocumentContextManager } from '../utils/DocumentContextManager';
+import { LaTeXTreeProcessor } from '../utils/LaTeXTreeProcessor';
 import {
   collection,
   query,
@@ -17,25 +22,29 @@ import {
   doc,
   serverTimestamp,
   onSnapshot,
-  Timestamp,
-  getDoc
+  getDoc,
+  Timestamp // <--- Added import for Timestamp
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/firebase';
+import { EditorView } from '@codemirror/view';
 
 interface ChatMessage {
   id: string;
   sender: string;
-  content: string;
+  content: string; // This holds the EXPLANATION
   timestamp: Date;
-  attachments?: { id: string, type: string, url: string, name: string }[];
-  mentions?: { id: string, name: string, type: string }[];
-  suggestion?: {
-    text: string;
-    range?: { start: number, end: number }; // For targeted text replacements
-    fileId?: string; // For suggestions related to specific files
-  };
+  attachments?: AttachedFile[];
+  mentions?: FileMention[];
+  suggestions?: Array<{ // Array of suggestions
+    text: string; // This holds the FULL LATEX CONTENT
+    range?: { start: number; end: number }; // Range might be less relevant now
+    fileId?: string;
+  }>;
+  isError?: boolean; // Flag for system error messages
 }
+
+
 
 interface AttachedFile {
   id: string;
@@ -75,16 +84,23 @@ interface ChatWindowProps {
   initialWidth?: number;
   minWidth?: number;
   maxWidth?: number;
+  editorView?: EditorView | null;
   className?: string;
   currentFileName?: string;
   currentFileId?: string;
   currentFileContent?: string;
   projectFiles?: { id: string, name: string, type: string }[];
-  onSuggestionApply?: (suggestion: string, range?: { start: number, end: number }, fileId?: string) => void;
+  onShowSuggestion?: (
+    suggestionData: SuggestionData, // Import or define SuggestionData
+    explanation: string,
+    originalContent: string
+  ) => void;
   onSuggestionReject?: () => void;
   onFileSelect?: (fileId: string) => void;
   onFileUpload?: (file: File) => Promise<string>;
+
 }
+
 
 // Available LLM Models
 const AVAILABLE_MODELS: LLMModel[] = [
@@ -166,7 +182,6 @@ const RESIZE_STYLES = `
   }
 `;
 
-
 const ChatWindow: React.FC<ChatWindowProps> = ({
   isOpen,
   onClose,
@@ -180,7 +195,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   currentFileId = '',
   currentFileContent = '',
   projectFiles = [],
-  onSuggestionApply,
+  editorView,
+  onShowSuggestion,
   onSuggestionReject,
   onFileSelect,
   onFileUpload
@@ -207,6 +223,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const [filteredMentions, setFilteredMentions] = useState<{ id: string, name: string, type: string }[]>([]);
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
+  const editorRef = useRef<{ view?: EditorView }>(null); // Assuming LatexEditor passes this down or you get it
 
   // Upload error state
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -225,6 +242,28 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const historyRef = useRef<HTMLDivElement>(null);
   const unsubscribeRef = useRef<() => void | null>(null);
   const mentionListRef = useRef<HTMLDivElement>(null);
+  console.log('[ChatWindow Render] Editor Ref View available:', !!editorRef?.current?.view);
+
+  useEffect(() => {
+    const initializeChat = async () => {
+      if (isOpen && projectId && userId) {
+        try {
+          // Initialize document context when chat is opened
+          const contextManager = new DocumentContextManager(projectId, userId);
+          if (currentFileId) {
+            await contextManager.initializeContext(currentFileId);
+          }
+
+          // Context is now available to the chat service
+          console.log("Chat document context initialized");
+        } catch (error) {
+          console.error("Error initializing chat document context:", error);
+        }
+      }
+    };
+
+    initializeChat();
+  }, [isOpen, projectId, userId, currentFileId]);
 
   useEffect(() => {
     const styleElement = document.createElement('style');
@@ -274,10 +313,16 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               id: msgDoc.id,
               sender: msgData.sender,
               content: msgData.content,
-              timestamp: msgData.timestamp.toDate(),
+              // SAFER TIMESTAMP HANDLING:
+              timestamp:
+                msgData.timestamp instanceof Timestamp
+                  ? msgData.timestamp.toDate()
+                  : msgData.timestamp instanceof Date
+                    ? msgData.timestamp
+                    : new Date(),
               attachments: msgData.attachments || [],
               mentions: msgData.mentions || [],
-              suggestion: msgData.suggestion || null
+              suggestions: msgData.suggestions || []
             };
           });
 
@@ -288,7 +333,13 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           sessions.push({
             id: doc.id,
             title: data.title || 'New Chat',
-            timestamp: data.timestamp ? data.timestamp.toDate() : new Date(),
+            // SAFER TIMESTAMP HANDLING:
+            timestamp:
+              data.timestamp instanceof Timestamp
+                ? data.timestamp.toDate()
+                : data.timestamp instanceof Date
+                  ? data.timestamp
+                  : new Date(),
             messages: messages,
             currentModel: model
           });
@@ -346,14 +397,19 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
             id: doc.id,
             sender: data.sender,
             content: data.content,
-            timestamp: data.timestamp ? data.timestamp.toDate() : new Date(),
+            // SAFER TIMESTAMP HANDLING:
+            timestamp:
+              data.timestamp instanceof Timestamp
+                ? data.timestamp.toDate()
+                : data.timestamp instanceof Date
+                  ? data.timestamp
+                  : new Date(),
             attachments: data.attachments || [],
             mentions: data.mentions || [],
-            suggestion: data.suggestion || null
+            suggestions: data.suggestions || []  // <--- Use "suggestions" array
           };
         });
 
-        // Update the active session with new messages
         setActiveSession(prev => {
           if (!prev) return prev;
           return {
@@ -362,7 +418,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           };
         });
 
-        // Also update in the sessions list
         setChatSessions(prev =>
           prev.map(session =>
             session.id === activeSessionId
@@ -371,6 +426,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           )
         );
       });
+
 
       unsubscribeRef.current = unsubscribe;
     };
@@ -437,6 +493,147 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       }
     };
   }, []);
+
+  const renderMessageContent = (msg: ChatMessage): JSX.Element => {
+    const contentToRender = msg.content || "";
+
+    // Render mentions if applicable
+    if (msg.mentions && msg.mentions.length > 0) {
+      // Use the existing renderMessageWithMentions helper if you still have it
+      // If not, implement basic mention rendering here or simply return the text for now
+      // Assuming renderMessageWithMentions exists:
+      return <>{renderMessageWithMentions(contentToRender, msg.mentions)}</>;
+    }
+
+    // Basic rendering for explanation or error (handle potential HTML later if needed)
+    return <p className="text-sm whitespace-pre-wrap">{contentToRender}</p>;
+  };
+
+  const handleViewSuggestionClick = (msg: ChatMessage) => {
+    // ... (get suggestionData)
+
+    console.log("[View Suggestion Click] Editor View available:", !!editorView); // Check the prop
+
+    // ... (check suggestionData and currentFileContent)
+
+    // Check editorView prop directly
+    if (!editorView) { // <--- Check the prop
+      console.error("Editor view is not available!");
+      alert("Cannot show suggestion: Editor is not ready.");
+      return;
+    }
+
+    // ... (set activeSuggestion state)
+  };
+
+
+  const getLargeContent = async (contentRef: string): Promise<string | null> => {
+    try {
+      const contentDoc = await getDoc(doc(db, "largeContent", contentRef));
+      if (contentDoc.exists()) {
+        return contentDoc.data().content;
+      }
+      return null;
+    } catch (error) {
+      console.error("Error retrieving large content:", error);
+      return null;
+    }
+  };
+
+
+
+  const getSessionMessages = async (sessionId: string): Promise<Array<{
+    sender: string;
+    content: any;
+    suggestions?: Array<{ text: string; range?: { start: number; end: number }; fileId?: string }>;
+  }>> => {
+    try {
+      const messagesRef = collection(db, 'chatSessions', sessionId, 'messages');
+      const q = query(messagesRef, orderBy('timestamp', 'asc'));
+      const querySnapshot = await getDocs(q);
+
+      const messages: Array<{
+        sender: string;
+        content: any;
+        suggestions?: Array<{ text: string; range?: { start: number; end: number }; fileId?: string }>;
+      }> = [];
+      querySnapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+
+        // Basic validation for data existence
+        if (!data) {
+          console.warn(`[ChatService] Message document ${docSnap.id} has no data.`);
+          return; // Skip this message
+        }
+
+        // Directly use data.content, ensuring it's a string.
+        // No JSON parsing needed here for LLM history.
+        const messageContent = typeof data.content === 'string' ? data.content : '';
+
+        // Determine role, default to 'assistant' if sender is unexpected
+        const role = data.sender === 'You' ? 'user' : 'assistant';
+
+        // Add to history if content is not empty
+        if (messageContent.trim() !== '' || (data.attachments && data.attachments.length > 0)) { // Include messages with only attachments too if needed
+          messages.push({
+            role: role,
+            content: messageContent // Use the string content directly
+          });
+        } else {
+          console.warn(`[ChatService] Skipping empty message ${docSnap.id} for LLM history.`);
+        }
+      });
+
+      return messages;
+    } catch (error) {
+      console.error('Error fetching chat history:', error);
+      return [];
+    }
+  };
+
+
+
+  // When processing AI responses, extract context information
+  const extractChangeContext = (responseText: string) => {
+    // Look for hints about where to apply changes
+    const locationMatch = responseText.match(/(?:add|insert|place|put|modify)(?:[^.]*?)(?:at|after|before|in|to)([^.]*?)(?:\.|\n|$)/i);
+
+    if (locationMatch && locationMatch[1]) {
+      return locationMatch[1].trim();
+    }
+
+    return null;
+  };
+
+  // Add near the top of ChatWindow.tsx, after imports
+  const sanitizeForFirestore = (data: any) => {
+    // Create a new object to avoid mutating the original
+    const sanitized: any = {};
+
+    // Process each field in the data
+    Object.entries(data).forEach(([key, value]) => {
+      // If the value is undefined, set it to null (Firebase accepts null)
+      if (value === undefined) {
+        sanitized[key] = null;
+      }
+      // If it's an object (but not null), recursively sanitize it
+      else if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        sanitized[key] = sanitizeForFirestore(value);
+      }
+      // If it's an array, map through and sanitize each item
+      else if (Array.isArray(value)) {
+        sanitized[key] = value.map((item: any) =>
+          typeof item === 'object' && item !== null ? sanitizeForFirestore(item) : item
+        );
+      }
+      // Otherwise use the value as is
+      else {
+        sanitized[key] = value;
+      }
+    });
+
+    return sanitized;
+  };
 
   // Create a new chat session in Firestore
   const createNewChatInFirestore = async () => {
@@ -515,10 +712,16 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               id: msgDoc.id,
               sender: msgData.sender,
               content: msgData.content,
-              timestamp: msgData.timestamp ? msgData.timestamp.toDate() : new Date(),
+              // SAFER TIMESTAMP HANDLING:
+              timestamp:
+                msgData.timestamp instanceof Timestamp
+                  ? msgData.timestamp.toDate()
+                  : msgData.timestamp instanceof Date
+                    ? msgData.timestamp
+                    : new Date(),
               attachments: msgData.attachments || [],
               mentions: msgData.mentions || [],
-              suggestion: msgData.suggestion || null
+              suggestions: msgData.suggestions || []
             };
           });
 
@@ -529,7 +732,13 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           const loadedSession: ChatSession = {
             id: sessionId,
             title: data.title || 'New Chat',
-            timestamp: data.timestamp ? data.timestamp.toDate() : new Date(),
+            // SAFER TIMESTAMP HANDLING:
+            timestamp:
+              data.timestamp instanceof Timestamp
+                ? data.timestamp.toDate()
+                : data.timestamp instanceof Date
+                  ? data.timestamp
+                  : new Date(),
             messages: messages,
             currentModel: model
           };
@@ -681,7 +890,85 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     );
   };
 
+  // Function to extract suggestions from chat messages
+  const extractSuggestions = (content: string): Array<{
+    text: string;
+    range?: { start: number; end: number };
+    fileId?: string;
+  }> | null => {
+    const suggestions: Array<{
+      text: string;
+      range?: { start: number; end: number };
+      fileId?: string;
+    }> = [];
+
+    // Look for line-specific changes
+    const lineChangeRegex = /(?:lines?|on line|at line) (\d+)(?:-(\d+))?.*?```(?:latex)?\n([\s\S]*?)\n```/gi;
+    let match;
+    while ((match = lineChangeRegex.exec(content)) !== null) {
+      const startLine = parseInt(match[1]);
+      const endLine = match[2] ? parseInt(match[2]) : startLine;
+      const code = match[3];
+
+      suggestions.push({
+        text: code,
+        range: {
+          start: startLine - 1, // Convert to 0-indexed
+          end: endLine
+        }
+      });
+    }
+
+    // Look for section-specific changes
+    const sectionChangeRegex = /(?:in|after|before) (?:the|your) ([a-z]+) section.*?```(?:latex)?\n([\s\S]*?)\n```/gi;
+    while ((match = sectionChangeRegex.exec(content)) !== null) {
+      const sectionName = match[1];
+      const code = match[2];
+
+      suggestions.push({
+        text: code,
+        sectionHint: sectionName
+      });
+    }
+
+    // Check for file-specific changes
+    const fileChangeRegex = /(?:in|for|update) (?:the|file) ['"]?([^'"]+?)['"]?(?:file)?.*?```(?:latex)?\n([\s\S]*?)\n```/gi;
+    while ((match = fileChangeRegex.exec(content)) !== null) {
+      const fileName = match[1];
+      const code = match[2];
+
+      // Find the file ID by name
+      const fileInfo = projectFiles.find(f => f.name === fileName);
+
+      suggestions.push({
+        text: code,
+        fileId: fileInfo?.id
+      });
+    }
+
+    // Add a more general regex for ANY code block - this ensures all code blocks are treated as suggestions
+    // This is the key addition that will fix your issue
+    const codeBlockRegex = /```(?:latex)?\n([\s\S]*?)\n```/g;
+
+    // Reset lastIndex to start from beginning
+    codeBlockRegex.lastIndex = 0;
+
+    while ((match = codeBlockRegex.exec(content)) !== null) {
+      // Check if this block was already captured by a more specific pattern above
+      const codeText = match[1];
+      if (!suggestions.some(s => s.text === codeText)) {
+        suggestions.push({
+          text: codeText
+        });
+      }
+    }
+
+    return suggestions.length > 0 ? suggestions : null;
+  };
+
+
   // Send a message to the active chat session
+  // In components/ChatWindow.tsx - Update handleSendMessage method
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -692,9 +979,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       // Parse mentions and get clean text
       const { text: cleanText, mentions } = parseMentions(newMessage);
 
-      // Upload attachments first if any
+      // Save a reference to any file attachments
       const attachmentData = [];
-
       if (attachedFiles.length > 0) {
         for (const file of attachedFiles) {
           attachmentData.push({
@@ -707,108 +993,86 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         }
       }
 
-      // Create user message in Firestore
-      const messageRef = await addDoc(
-        collection(db, "chatSessions", activeSessionId, "messages"),
-        {
-          sender: "You",
-          content: cleanText,
-          timestamp: serverTimestamp(),
-          attachments: attachmentData.length > 0 ? attachmentData : null,
-          mentions: mentions.length > 0 ? mentions : null
-        }
-      );
-
-      // Update session's last updated time and title if it's the first message
-      const sessionRef = doc(db, "chatSessions", activeSessionId);
-      const sessionDoc = await getDoc(sessionRef);
-
-      if (sessionDoc.exists()) {
-        const sessionData = sessionDoc.data();
-        const messageCount = sessionData.messageCount || 0;
-
-        const updateData: any = {
-          lastUpdated: serverTimestamp(),
-          messageCount: messageCount + 1
-        };
-
-        // Update title if this is the first message
-        if (messageCount === 0 && cleanText.trim()) {
-          updateData.title = cleanText.substring(0, 20) + (cleanText.length > 20 ? '...' : '');
-        }
-
-        await updateDoc(sessionRef, updateData);
-      }
-
       // Clear input state
       setNewMessage('');
       setAttachedFiles([]);
 
-      // Make API call to get response from LLM (simulation for now)
-      setTimeout(async () => {
-        try {
-          const model = activeSession?.currentModel || AVAILABLE_MODELS[0];
+      // Prepare current file data safely
+      const currentFileData = currentFileId ? {
+        id: currentFileId,
+        name: currentFileName || '',
+        content: currentFileContent || ''
+      } : undefined;
 
-          // Prepare context for the AI
-          let systemContext = "";
+      try {
+        // Get file content for mentioned files
+        const mentionedFilesData = await Promise.all(
+          mentions.map(async (mention) => {
+            // Skip if it's the current file
+            if (mention.id === currentFileId) return null;
 
-          // Add current file information if available
-          if (currentFileId && currentFileName) {
-            systemContext += `The user is currently viewing file: ${currentFileName}\n`;
+            // Get file content
+            const fileContent = await getFileContent(mention.id);
 
-            if (currentFileContent) {
-              systemContext += `File content:\n\`\`\`\n${currentFileContent.substring(0, 1000)}${currentFileContent.length > 1000 ? '...' : ''}\n\`\`\`\n`;
-            }
-          }
+            return {
+              id: mention.id,
+              name: mention.name,
+              content: fileContent || ''
+            };
+          })
+        );
 
-          // In a real app, you'd call your API here with the model selection
-          // For simulation, let's create a response that includes:
-          // 1. A reference to the current file
-          // 2. A LaTeX suggestion with inline changes
-          let responseText = `I've analyzed your request about ${cleanText}.\n\n`;
+        // Filter out nulls
+        const validMentionedFiles = mentionedFilesData.filter(Boolean);
 
-          // If we have a current file, add a suggestion
-          if (currentFileName && currentFileName.endsWith(".tex")) {
-            responseText += `Here's a suggestion for improving your LaTeX document:\n\n\`\`\`latex\n\\begin{equation}\n    E = mc^2\n\\end{equation}\n\`\`\`\n\nYou can add this equation to your document.`;
-          } else {
-            responseText += `I can help you with LaTeX formatting. If you open a .tex file, I can provide specific suggestions for your document.`;
-          }
+        // Now use the chat service to send the message and get response
+        const response = await chatService.sendMessage({
+          content: cleanText,
+          projectId,
+          sessionId: activeSessionId,
+          userId,
+          userName: 'You',
+          model: activeSession?.currentModel?.id || 'gpt-4o',
+          currentFile: currentFileData,
+          mentionedFiles: validMentionedFiles
+        });
+      } catch (sendError) {
+        console.error("Error sending message:", sendError);
+        // Show an error message to the user - avoid trying to access properties of the error
+        const errorMessage = sendError instanceof Error ? sendError.message : "Unknown error sending message";
+        console.error(`Error sending message: ${errorMessage}`);
 
-          // Add the assistant's response to Firestore
-          // In a real implementation, this would come from your API
-          const assistantMessage = {
-            sender: "LaTeX Assistant",
-            content: responseText,
-            timestamp: serverTimestamp(),
-            mentions: currentFileId ? [{ id: currentFileId, name: currentFileName, type: 'file' }] : null,
-            // Add a suggestion for demonstration
-            suggestion: currentFileId ? {
-              text: "\\begin{equation}\n    E = mc^2\n\\end{equation}",
-              fileId: currentFileId,
-              range: { start: 100, end: 100 } // This would be a real position in the document
-            } : null
-          };
-
-          await addDoc(
-            collection(db, "chatSessions", activeSessionId, "messages"),
-            assistantMessage
-          );
-
-          // Get session data and update message count
-          const sessionSnapshot = await getDoc(sessionRef);
-          const sessionData = sessionSnapshot.data();
-          const messageCount = sessionData ? (sessionData.messageCount || 0) : 0;
-          await updateDoc(sessionRef, {
-            messageCount: messageCount + 2,
-            lastUpdated: serverTimestamp()
-          });
-
-        } catch (error) {
-          console.error("Error sending assistant message:", error);
-        }
-      }, 1000);
+        // Show an error notification to the user
+        // (Implement this based on your UI feedback system)
+      }
     } catch (error) {
-      console.error("Error sending message:", error);
+      console.error("Error preparing message:", error);
+      // Handle general errors
+    }
+  };
+
+  // Add this helper function to get file content
+  const getFileContent = async (fileId: string): Promise<string> => {
+    try {
+      // First try in projectFiles
+      let fileRef = doc(db, "projectFiles", fileId);
+      let fileDoc = await getDoc(fileRef);
+
+      // If not found, try project_files
+      if (!fileDoc.exists()) {
+        fileRef = doc(db, "project_files", fileId);
+        fileDoc = await getDoc(fileRef);
+      }
+
+      if (fileDoc.exists()) {
+        const data = fileDoc.data();
+        return data.content || '';
+      }
+
+      return '';
+    } catch (error) {
+      console.error("Error getting file content:", error);
+      return '';
     }
   };
 
@@ -837,7 +1101,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       }
     };
   }, []);
-
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // If mention list is open, navigate through it
@@ -1187,20 +1450,20 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
         {/* Chat Content Area with drop zone */}
         {!loading && (
-  <div 
-    className="flex-1 relative flex flex-col overflow-hidden" // Added flex flex-col here
-    onDragOver={handleDragOver}
-    onDragLeave={handleDragLeave}
-    onDrop={handleDrop}
-  >
+          <div
+            className="flex-1 relative flex flex-col"
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             {/* Drop indicator overlay */}
             {dragActive && (
-      <div className="absolute inset-0 flex items-center justify-center bg-blue-900/20 z-10">
-        <div className="bg-gray-800 rounded-lg p-4 shadow-lg">
-          <p className="text-center text-white">Drop file to attach to your message</p>
-        </div>
-      </div>
-    )}
+              <div className="absolute inset-0 flex items-center justify-center bg-blue-900/20 z-10">
+                <div className="bg-gray-800 rounded-lg p-4 shadow-lg">
+                  <p className="text-center text-white">Drop file to attach to your message</p>
+                </div>
+              </div>
+            )}
 
             {/* Empty State (when no messages) */}
             {messages.length === 0 && (
@@ -1235,80 +1498,93 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
             {/* Messages (when there are messages) */}
             {messages.length > 0 && (
-              <div className="flex-1 overflow-y-auto p-3 space-y-4 mb-0">
-                {messages.map((msg) => (
-                  <div key={msg.id} className="flex flex-col message-container">
-                    {/* Sender Badge */}
-                    <div className="text-xs text-gray-400 mb-1">
-                      {msg.sender === 'You' ? 'You' : 'LaTeX Assistant'}
-                    </div>
+              // Make sure this container scrolls, not the whole chat window if possible
+              <div className="flex-1 overflow-y-auto p-3 space-y-4 messages-container">
+                {messages.map((msg) => {
+                  // ***** FIX: DEFINE VARIABLES HERE for each message *****
+                  const isAssistant = msg.sender !== 'You' && msg.sender !== 'System';
+                  const hasSuggestions = isAssistant && msg.suggestions && msg.suggestions.length > 0 && !msg.isError;
+                  const suggestionData = hasSuggestions ? msg.suggestions[0] : null; // Get the first suggestion object
+                  // ***** END FIX *****
 
-                    {/* Message Content */}
-                    <div
-                      className={`max-w-3xl rounded-lg px-3 py-2 ${msg.sender === 'You'
-                          ? 'bg-blue-600/20 text-white'
-                          : 'bg-gray-800 text-white'
-                        }`}
-                    >
-                      <p className="text-sm whitespace-pre-wrap">
-                        {msg.mentions && msg.mentions.length > 0
-                          ? renderMessageWithMentions(msg.content, msg.mentions)
-                          : msg.content
-                        }
-                      </p>
+                  return (
+                    // Use msg.id for the key
+                    <div key={msg.id} className={`flex flex-col ${msg.sender === 'You' ? 'items-end' : 'items-start'} message-container`}>
+                      {/* Sender Badge */}
+                      <div className="text-xs text-gray-400 mb-1 px-1">
+                        {msg.sender === 'You' ? 'You' : msg.sender === 'System' ? 'System' : 'LaTeX Assistant'}
+                      </div>
 
-                      {/* Attachments */}
-                      {msg.attachments && msg.attachments.length > 0 && (
-                        <div className="mt-2 space-y-2">
-                          {msg.attachments.map(file => (
-                            <div key={file.id} className="bg-gray-900 rounded p-2 flex items-center">
-                              <File className="h-4 w-4 mr-2 text-blue-400" />
-                              <span className="text-xs text-gray-300 truncate mr-2">{file.name}</span>
+                      {/* Message Content Bubble */}
+                      <div
+                        className={`max-w-[85%] rounded-lg px-3 py-2 ${msg.sender === 'You' ? 'bg-blue-600/70 text-white' :
+                          msg.isError ? 'bg-red-800/50 border border-red-700/60 text-red-300' :
+                            'bg-gray-700/60 text-gray-200' // Consistent background for assistant/system non-errors
+                          }`}
+                      >
+                        {/* Render main message content (explanation or user text) */}
+                        {renderMessageContent(msg)}
 
-                              {/* Preview/download action */}
-                              {file.url && (
-                                <a
-                                  href={file.url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-xs text-blue-400 hover:text-blue-300 ml-auto"
-                                >
-                                  View
-                                </a>
-                              )}
-                            </div>
-                          ))}
+                        {/* Attachments */}
+                        {msg.attachments && msg.attachments.length > 0 && (
+                          <div className="mt-2 space-y-1 border-t border-gray-600/50 pt-1.5">
+                            {msg.attachments.map(file => (
+                              <div key={file.id} className="bg-gray-800/50 rounded px-1.5 py-0.5 flex items-center text-xs">
+                                {getFileIcon(file.type, file.name)}
+                                <span className="text-gray-300 truncate mr-2 flex-1" title={file.name}>{file.name}</span>
+                                <a href={file.url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline ml-auto">View</a>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Suggestion Button - Rendered below the message bubble */}
+                      {/* Use the defined variables 'hasSuggestions' and 'suggestionData' */}
+                      {hasSuggestions && suggestionData && (
+                        <div className="mt-1.5">
+                          <button
+                            onClick={() => { // Directly call onShowSuggestion here
+                              console.log("[View Suggestion Click] Button clicked for message:", msg.id);
+                              // Ensure original content is available
+                              if (typeof currentFileContent !== 'string') {
+                                console.error("Original content missing!");
+                                alert("Cannot show suggestion: Original file content is missing.");
+                                return;
+                              }
+                              // Call the callback passed from LatexEditor
+                              if (onShowSuggestion) {
+                                onShowSuggestion(
+                                  suggestionData, // Pass the suggestion object
+                                  msg.content,       // Pass the explanation
+                                  currentFileContent // Pass original editor content
+                                );
+                              } else {
+                                console.error("onShowSuggestion callback is missing!");
+                              }
+                            }}
+                            className="bg-blue-600/80 text-white text-xs py-1 px-2 rounded hover:bg-blue-700 flex items-center shadow"
+                            title="View AI Suggestion"
+                          >
+                            <Edit className="h-3 w-3 mr-1" /> View Suggestion
+                          </button>
                         </div>
                       )}
-                    </div>
 
-                    {/* LaTeX Assistant suggestion buttons */}
-                    {msg.sender === 'LaTeX Assistant' && msg.suggestion && (
-                      <div className="flex space-x-2 mt-2">
-                        <button
-                          onClick={() => onSuggestionApply && onSuggestionApply(
-                            msg.suggestion?.text || '',
-                            msg.suggestion?.range,
-                            msg.suggestion?.fileId
-                          )}
-                          className="bg-blue-600 text-white text-xs py-1 px-2 rounded hover:bg-blue-700"
-                        >
-                          Apply Suggestion
-                        </button>
-                        <button
-                          onClick={() => onSuggestionReject && onSuggestionReject()}
-                          className="bg-gray-700 text-gray-300 text-xs py-1 px-2 rounded hover:bg-gray-600"
-                        >
-                          Reject
-                        </button>
+                      {/* Timestamp */}
+                      <div className="text-[10px] text-gray-500 mt-1 px-1">
+                        {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </div>
-                    )}
-                  </div>
-                ))}
-                <div ref={messagesEndRef} />
-              </div>
+
+                      {/* REMOVED the old conflicting Apply/Ignore buttons that called /api/latex-content */}
+
+                    </div> // End message container div
+                  );
+                })}
+                <div ref={messagesEndRef} className="h-0" /> {/* Scroll anchor */}
+              </div> // End messages container div
             )}
-          </div>
+          </div> // End Chat Content Area Div
         )}
 
         {/* Input Area */}
@@ -1407,8 +1683,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                         <div
                           key={file.id}
                           onClick={() => insertMention(file)}
-                          className={`px-3 py-2 text-sm flex items-center cursor-pointer ${index === selectedMentionIndex ? 'bg-[#04395e] text-white' : 'text-gray-300 hover:bg-[#2a2d2e]'
-                            }`}
+                          className={`px-3 py-2 text-sm flex items-center cursor-pointer ${index === selectedMentionIndex ? 'bg-[#04395e] text-white' : 'text-gray-300 hover:bg-[#2a2d2e]'}`}
                         >
                           {file.type === 'folder' ? (
                             <Folder className="h-4 w-4 mr-2 text-blue-400" />
@@ -1495,6 +1770,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       </ResizablePanel>
     </div>
   );
+
+
 };
 
 export default ChatWindow;
