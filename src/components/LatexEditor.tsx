@@ -8,7 +8,11 @@ import { authenticateWithFirebase } from "@/lib/firebase-auth";
 import ChatWindow from './ChatWindow'; // Use the correct path
 import { EditorView } from '@codemirror/view';
 import ReactDOM from 'react-dom';
+import chatService from '@/services/chatService'; // Import chatService
+import { createPatch } from 'diff';
+import { applyUnifiedDiffPatch } from '../utils/editorUtils';
 import { EditorState } from '@codemirror/state'; // Import EditorState if using onCreateEditor state
+import { applyMultipleUnifiedDiffPatches, applySearchReplaceBlocks, validateDiffHunks } from '../utils/editorUtils';
 import {
   Loader, Save, Download, Play, Edit, Eye, Layout, Menu,
   FileText, Folder, FolderOpen, RefreshCw, ChevronLeft, ChevronRight, ChevronDown,
@@ -22,7 +26,7 @@ import { ChatProvider, useChat } from '../context/ChatContext';
 import ChatPanel from './ChatWindow';
 import HeaderChatButton from './HeaderChatButton';
 import { compileLatex } from "@/services/latexService";
-import SuggestionOverlay, { SuggestionData } from './SuggestionOverlay';
+import SuggestionOverlay from './SuggestionOverlay';
 
 // Import components
 import EnhancedSidebar from '../components/EnhancedSidebar';
@@ -38,6 +42,13 @@ interface FileTreeItem {
   content?: string;
   children?: FileTreeItem[];
 }
+
+interface SearchReplaceBlock {
+  search: string;
+  replace: string;
+  explanation?: string;
+}
+
 
 // For file mentions in chat
 interface FileMention {
@@ -467,8 +478,17 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   const [currentFileName, setCurrentFileName] = useState("");
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
-  const editorRef = useRef<{ view?: EditorView } | null>(null);
-  
+  const [originalContentForDiff, setOriginalContentForDiff] = useState<string>('');
+  const { activeSessionId } = useChat();
+
+
+  const [chatMessages, setChatMessages] = useState<any[]>([]); // Assuming ChatWindow needs this for context history
+  const [setActiveSessionId] = useState<string | null>(null); // Needed for fallback call
+  const [isLoadingFallback, setIsLoadingFallback] = useState<boolean>(false); // State for fallback loading
+
+  // Ref to store original messages context for fallback call
+  const originalMessagesForFallback = useRef<Array<{ role: string; content: string }>>([]);
+
 
   // Chat and suggestion state
   const { isChatOpen, openChat, closeChat, toggleChat } = useChat();
@@ -479,6 +499,7 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   } | null>(null);
   const [chatFileList, setChatFileList] = useState([]);
   const containerRef = useRef<HTMLDivElement>(null);
+  const contextActiveSessionId  = useChat();
 
   // File tree specific state
   const [expandedFolders, setExpandedFolders] = useState({});
@@ -499,56 +520,318 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   const [isEditorReady, setIsEditorReady] = useState(false); // <--- ADD THIS LINE
 
   const [modalSuggestion, setModalSuggestion] = useState<{
-    suggestionData: SuggestionData;
+    mode: 'diff' | 'search_replace'; // Track mode
+    diffHunks?: string[];
+    searchReplaceBlocks?: SearchReplaceBlock[];
     explanation: string;
     originalContent: string;
   } | null>(null);
 
-  const handleShowSuggestion = useCallback((
-    suggestionData: SuggestionData,
+
+  const [originalContentForOverlayDiff, setOriginalContentForOverlayDiff] = useState<string>('');
+  const editorRef = useRef<{ view?: EditorView } | null>(null); // Ensure this ref is correctly typed
+  const [activeSession, setActiveSession] = useState<any>(null); // Assuming you get this from context or prop
+
+  // Helper function to show notifications
+  const showNotification = (message, type = "success") => {
+    const notification = document.createElement('div');
+    notification.className = `fixed bottom-4 right-4 px-4 py-2 rounded-md shadow-lg z-50 ${type === "success" ? "bg-green-600 text-white" :
+      type === "error" ? "bg-red-600 text-white" :
+        "bg-blue-600 text-white"
+      }`;
+    notification.textContent = message;
+    document.body.appendChild(notification);
+
+    setTimeout(() => {
+      if (document.body.contains(notification)) {
+        document.body.removeChild(notification);
+      }
+    }, 3000);
+  };
+
+  // --- MODIFIED requestSearchReplaceFallback ---
+  // Ensure this function uses the stored originalMessagesForFallback.current
+  const requestSearchReplaceFallback = useCallback(async () => {
+    // **Ensure we have context stored**
+    if (!modalSuggestion || originalMessagesForFallback.current.length === 0) {
+      showNotification("Cannot request fallback: Missing original context.", "error");
+      setIsLoadingFallback(false); // Stop loading
+      // Close the modal if we can't fallback
+      setModalSuggestion(null);
+      setOriginalContentForOverlayDiff('');
+      return;
+    }
+    console.log("[LatexEditor] Requesting Search/Replace fallback using stored context...");
+    setIsLoadingFallback(true); // Show loading state in modal
+    // Keep modal open, maybe update explanation slightly
+    setModalSuggestion(prev => prev ? { ...prev, explanation: prev.explanation + "\n\n(Attempting fallback...)" } : null);
+
+    try {
+      // Get the fallback data using the *stored* context
+      const currentModelId = 'gpt-4o';
+      const fallbackData = await chatService.getSearchReplaceFallback(
+        originalMessagesForFallback.current,
+        currentModelId // Pass model
+      );
+
+      if (fallbackData.error || !fallbackData.search_replace_blocks || fallbackData.search_replace_blocks.length === 0) {
+        throw new Error(fallbackData.error || "Fallback generated no valid search/replace blocks.");
+      }
+
+      // Success: Update modal state for search/replace mode
+      setModalSuggestion(prev => prev ? {
+        ...prev, // Keep original originalContent
+        mode: 'search_replace', // <-- CHANGE MODE
+        diffHunks: undefined, // Clear diff hunks
+        searchReplaceBlocks: fallbackData.search_replace_blocks, // Add S/R blocks
+        explanation: fallbackData.explanation || prev.explanation // Use new explanation if provided
+      } : null);
+      setIsLoadingFallback(false);
+      console.log("[LatexEditor] Fallback successful. Switched modal to search/replace mode.");
+
+    } catch (error) {
+      console.error("Error requesting/processing Search/Replace fallback:", error);
+      showNotification(`Failed to get fallback suggestion: ${error instanceof Error ? error.message : 'Unknown error'}`, "error");
+      setIsLoadingFallback(false);
+      // Keep the modal open but indicate fallback failure
+      setModalSuggestion(prev => prev ? { ...prev, explanation: prev.explanation + "\n\n(Fallback request failed.)" } : null);
+      // Optionally close modal on fallback failure:
+      // setModalSuggestion(null);
+      // setOriginalContentForOverlayDiff('');
+    } finally {
+      // Clear the stored context once fallback attempt is done (success or fail)
+      // originalMessagesForFallback.current = []; // Maybe clear later, upon final apply/reject? Let's clear on reject/apply.
+    }
+  }, [modalSuggestion, showNotification /* Add deps: chatService, setModalSuggestion, etc. */]); // Add dependencies
+  // --- END MODIFIED requestSearchReplaceFallback ---
+
+
+  // --- MODIFIED handleShowSuggestion ---
+  const handleShowSuggestion = useCallback(async (
+    diffHunks: string[],
     explanation: string,
-    originalContent: string
+    originalContent: string // Editor content when suggestion was requested
   ) => {
-    console.log("[LatexEditor] Showing suggestion modal.");
-    setModalSuggestion({ suggestionData, explanation, originalContent });
-  }, []); // Dependencies might be needed if it uses other state/props
-  
+    console.log("[LatexEditor] Received suggestion. Validating diff hunks...");
+    if (!editorRef.current?.view) {
+      console.warn("Editor view not ready when receiving suggestion.");
+      showNotification("Cannot display suggestion: Editor not ready.", "warning");
+      return;
+    }
+
+    // **VALIDATE THE HUNKS**
+    const validationResult = validateDiffHunks(diffHunks);
+
+    // --- MODIFIED BLOCK for INVALID Diffs ---
+    if (!validationResult.isValid) {
+      const errorMsg = `Diff validation failed: ${validationResult.error}. Hunk index: ${validationResult.invalidHunkIndex}`;
+      console.error(`[LatexEditor] ${errorMsg}`); // Log the error for debugging
+
+      // SHOW notification, but make it less alarming (warning)
+      showNotification(`Suggestion format is invalid. See details in overlay.`, "warning");
+
+      // DO NOT attempt fallback here
+      // DO NOT store context here
+
+      // Set state for the overlay to show the error message
+      setOriginalContentForOverlayDiff(originalContent); // Keep original for context if needed
+      setModalSuggestion({
+        mode: 'diff', // Keep mode as diff initially, overlay will handle display
+        diffHunks,    // Pass invalid hunks (overlay might use them for debug display)
+        explanation,
+        originalContent,
+        validationError: errorMsg // <-- ADD validation error message
+      });
+      setIsLoadingFallback(false); // Ensure loading is off
+      originalMessagesForFallback.current = []; // Clear any potentially stale context
+
+    } else {
+      // --- Diff is VALID, proceed as before ---
+      console.log("[LatexEditor] Diff validation successful. Showing suggestion modal (diff mode).");
+
+      // Store context in case *application* fails later, triggering the Search/Replace fallback
+      try {
+        // Fetch history (ensure activeSessionId is available from context/props)
+        const currentSessionId = contextActiveSessionId; // Read from chat context
+        if (!currentSessionId) throw new Error("Active session ID not available for fallback context.");
+
+        // Fetch history - Ensure getSessionMessages is robust or handle potential errors
+        const history = await chatService.getSessionMessages(currentSessionId);
+        const currentModelId = activeSession?.currentModel?.id || 'gpt-4o'; // Get current model
+
+        const currentContext = chatService.prepareMessagesForLLM(history, {
+            // Provide necessary params for context preparation
+            content: "Context for fallback if diff application fails", // Placeholder content
+            projectId,
+            sessionId: currentSessionId,
+            userId,
+            userName: 'User', // Replace if available
+            model: currentModelId,
+            currentFile: { id: currentFileId || '', name: currentFileName || '', content: originalContent }
+        });
+        originalMessagesForFallback.current = currentContext; // Store for potential later fallback
+        console.log("[LatexEditor] Stored context for potential apply failure fallback.");
+
+      } catch (err) {
+        console.error("Failed to prepare context for potential apply failure fallback:", err);
+        originalMessagesForFallback.current = []; // Clear context if preparation failed
+        showNotification("Warning: Could not prepare context for potential fallback.", "warning");
+      }
+
+      // Set state to show the valid diff in the overlay
+      setOriginalContentForOverlayDiff(originalContent);
+      setModalSuggestion({
+        mode: 'diff',
+        diffHunks,
+        explanation,
+        originalContent,
+        validationError: undefined // <-- Explicitly set no validation error
+      });
+      setIsLoadingFallback(false); // Ensure loading is off
+    }
+  }, [
+    contextActiveSessionId, // Added dependency
+    activeSession,         // Added dependency for model ID
+    projectId, userId, currentFileId, currentFileName, // Existing dependencies
+    showNotification, // Existing dependency
+    // Ensure setModalSuggestion, setOriginalContentForOverlayDiff, setIsLoadingFallback are stable or included
+  ]);
+
+  // --- END MODIFIED handleShowSuggestion ---
+
+
+
   const handleCloseSuggestion = useCallback(() => {
     console.log("[LatexEditor] Closing suggestion modal.");
     setModalSuggestion(null);
   }, []);
-  
-  const handleApplyAndCloseSuggestion = useCallback((appliedFullContent: string) => {
-    console.log("[LatexEditor] Applying suggestion from modal.");
-  
-    // Get the current view instance
-    const view = editorRef.current?.view;
-    if (!view) {
-      console.error("Editor view missing, cannot sync state after apply.");
+
+  // handleApplyAndCloseSuggestion: Now triggers fallback on diff failure
+  const handleApplyDiffSuggestion = useCallback((hunksToApply: string[]) => {
+    console.log("[LatexEditor] Applying suggestion using multiple patches.");
+    if (!editorRef.current?.view) { /* ... error handling ... */ return; }
+
+    const patchResult = applyMultipleUnifiedDiffPatches(editorRef, hunksToApply);
+
+    if (!patchResult.success) {
+      // Failed applying DIFF
+      // Trigger Fallback - relies on context stored in handleShowSuggestion
+      requestSearchReplaceFallback(); // <-- Call the updated fallback function
+    }
+
+
+    if (patchResult.success && patchResult.finalContent !== undefined) {
+      // --- SUCCESS applying DIFF ---
+      if (patchResult.finalContent !== code) {
+        setCode(patchResult.finalContent);
+        setIsSaved(false);
+      } else {
+        setIsSaved(true); // No change means it's still saved
+      }
+      showNotification("Suggestion applied via patch");
+      setModalSuggestion(null); // Close modal on success
+      setOriginalContentForOverlayDiff('');
+      originalMessagesForFallback.current = []; // Clear stored messages
+    } else {
+      // --- FAILED applying DIFF ---
+      console.error(`Failed to apply patch: ${patchResult.error}. Hunk index: ${patchResult.failedHunkIndex}`);
+      showNotification(`Diff apply failed: ${patchResult.error || 'Patch invalid'}. Requesting fallback...`, "warning");
+      // --- Trigger Fallback ---
+      requestSearchReplaceFallback();
+      // --- DO NOT close modal here, wait for fallback result ---
+    }
+  }, [code, setCode, setIsSaved /*, other dependencies like activeSessionId, userId etc. for fallback */]);
+
+  // NEW Handler for applying Search/Replace blocks
+  // --- Apply S/R Handler ---
+  const handleApplySearchReplace = useCallback((blocksToApply: SearchReplaceBlock[]) => {
+    console.log("[LatexEditor] Applying suggestion using Search/Replace.");
+    if (!editorRef.current?.view) { /* ... error handling ... */ return; }
+
+    const applyResult = applySearchReplaceBlocks(editorRef, blocksToApply);
+
+    if (applyResult.success && applyResult.finalContent !== undefined) {
+      // --- SUCCESS applying S/R ---
+      if (applyResult.finalContent !== code) { // Only mark unsaved if content changes
+        setCode(applyResult.finalContent);
+        setIsSaved(false);
+      }
+      showNotification("Suggestion applied via Search/Replace");
+      setModalSuggestion(null); // Close modal
+      setOriginalContentForOverlayDiff('');
+      originalMessagesForFallback.current = []; // Clear stored messages
+    } else {
+      // --- FAILED applying S/R ---
+      console.error(`Failed to apply Search/Replace: ${applyResult.error}. Block index: ${applyResult.failedBlockIndex}`);
+      showNotification(`Search/Replace failed: ${applyResult.error || 'Could not apply changes'}. Please check the console. You may need to apply changes manually.`, "error");
+      // Keep modal open to allow user to potentially copy/paste? Or close? Let's close on S/R failure for now.
+      setModalSuggestion(null);
+      setOriginalContentForOverlayDiff('');
+      originalMessagesForFallback.current = [];
+    }
+  }, [code, setCode, setIsSaved /*, other deps */]);
+  // --- Reject Handler ---
+  const handleRejectAndClose = useCallback(() => {
+    console.log("[LatexEditor] Suggestion rejected/closed.");
+    setModalSuggestion(null);
+    setOriginalContentForOverlayDiff('');
+    setIsLoadingFallback(false);
+    originalMessagesForFallback.current = []; // Clear stored context on reject
+  }, [ /* Add setter dependencies */]);
+
+
+  // Replace the existing handleApplyAndCloseSuggestion function
+  const handleApplyAndCloseSuggestion = useCallback((
+    hunksToApply: string[] // Receives the array of hunks from overlay's onApply
+  ) => {
+    console.log("[LatexEditor] Applying suggestion using multiple patches.");
+
+    // 1. Ensure editor instance is available
+    if (!editorRef.current?.view) {
+      console.error("Editor view missing, cannot apply suggestion patch.");
       showNotification("Error applying suggestion (editor unavailable)", "error");
-      setModalSuggestion(null); // Close modal anyway
+      setModalSuggestion(null);
+      setOriginalContentForOverlayDiff(''); // Clear stored original content
       return;
     }
-  
-    // Update React state AFTER the overlay has modified the editor
-    // It's crucial the overlay finishes its transaction first
-    // We trust the overlay passed the correct full content
-    setCode(appliedFullContent);
-    setIsSaved(false);
-    showNotification("Suggestion applied");
-    setModalSuggestion(null); // Close the modal
-  
-    // Optional: Trigger auto-save or auto-compile
-    // if (autoCompile) { handleCompile(); }
-  
-  }, [/* dependencies like setCode, setIsSaved, showNotification, autoCompile */]); // Add dependencies
 
+    // 2. Apply the patches using the utility function
+    // applyMultipleUnifiedDiffPatches takes the ref and the array of hunk strings
+    const patchResult = applyMultipleUnifiedDiffPatches(editorRef, hunksToApply);
 
+    // 3. Update state based on patch result
+    if (patchResult.success && patchResult.finalContent !== undefined) {
+      // Only update React state if patching succeeded AND content changed
+      if (patchResult.finalContent !== code) { // Compare with current React state
+        setCode(patchResult.finalContent);
+        setIsSaved(false); // Mark as unsaved
+        showNotification("Suggestion applied");
+        console.log("[LatexEditor] Suggestion applied successfully via patch.");
+      } else {
+        // Content didn't change after applying all patches
+        showNotification("Suggestion applied (no effective changes)");
+        console.log("[LatexEditor] Suggestion applied via patch, but content was identical.");
+        // Mark as saved because no change occurred relative to the editor's state before apply
+        // However, if the original state WAS unsaved, it remains unsaved.
+        // Let's keep it simple: if apply was called, mark unsaved unless proven otherwise.
+        // Revisit this if needed. For now, assume applying means potential change.
+        setIsSaved(false);
+      }
+      // Optional: Trigger auto-compile or auto-save
+      // if (autoCompile) { handleCompile(); }
+    } else {
+      // Handle patching failure
+      console.error(`Failed to apply patch: ${patchResult.error}. Hunk index: ${patchResult.failedHunkIndex}`);
+      showNotification(`Error applying suggestion: ${patchResult.error || 'Patch failed'}. Please check console for details.`, "error");
+      // You could offer a fallback here, e.g., copy suggestion to clipboard
+    }
 
+    // 4. Close the modal and clear the stored original content
+    setModalSuggestion(null);
+    setOriginalContentForOverlayDiff('');
 
-
-
-
+    // Add dependencies: code, setCode, setIsSaved, showNotification, autoCompile, handleCompile etc.
+  }, [code /* Add other dependencies */]);
 
 
   const contentRef = useRef(null);
@@ -567,13 +850,13 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
     console.log("[LatexEditor] handleEditorCreate: Editor view instance CAPTURED.");
     // Store the view instance in the ref
     editorRef.current = { view: view };
-    setIsEditorReady(true); // Mark editor as ready
+    setTimeout(() => setIsEditorReady(true), 0);
   }, []); // Empty dependency array
 
-useEffect(() => {
-  console.log("[LatexEditor Effect] editorRef.current?.view value:", editorRef.current?.view);
-  // You could add more logic here to see if it becomes null/undefined later
-}, [editorRef.current?.view]); // Run when the view instance itself changes
+  useEffect(() => {
+    console.log("[LatexEditor Effect] editorRef.current?.view value:", editorRef.current?.view);
+    // You could add more logic here to see if it becomes null/undefined later
+  }, [editorRef.current?.view]); // Run when the view instance itself changes
 
   /**
    * Called when the user applies a suggestion from the SuggestionOverlay component.
@@ -587,14 +870,14 @@ useEffect(() => {
    */
   const handleApplySuggestionCallback = (appliedFullContent: string) => {
     console.log("[LatexEditor] Suggestion application confirmed by ChatWindow overlay.");
-  
+
     // Get the current content *after* the overlay modified the editor
     const currentEditorContent = editorRef.current?.view?.state.doc.toString() ?? appliedFullContent;
     setCode(currentEditorContent); // Sync React state with editor
-  
+
     setIsSaved(false); // Mark as unsaved
     showNotification("Suggestion applied");
-  
+
     // Optional: Trigger auto-save or auto-compile
     // if (autoCompile) { handleCompile(); }
   };
@@ -2258,23 +2541,6 @@ useEffect(() => {
     return file?._name_ || file?.name || '';
   };
 
-  // Helper function to show notifications
-  const showNotification = (message, type = "success") => {
-    const notification = document.createElement('div');
-    notification.className = `fixed bottom-4 right-4 px-4 py-2 rounded-md shadow-lg z-50 ${type === "success" ? "bg-green-600 text-white" :
-      type === "error" ? "bg-red-600 text-white" :
-        "bg-blue-600 text-white"
-      }`;
-    notification.textContent = message;
-    document.body.appendChild(notification);
-
-    setTimeout(() => {
-      if (document.body.contains(notification)) {
-        document.body.removeChild(notification);
-      }
-    }, 3000);
-  };
-
   // Toggle sidebar visibility
   const toggleSidebar = () => {
     setIsSidebarCollapsed(!isSidebarCollapsed);
@@ -2869,17 +3135,17 @@ useEffect(() => {
             onClose={closeChat}
             projectId={projectId}
             userId={userId}
-            editorView={isEditorReady ? editorRef.current?.view ?? null : null}
+            activeSession={activeSession}
+            editorView={isEditorReady && editorRef.current ? editorRef.current.view : null}
             currentFileName={currentFileName}
             currentFileId={currentFileId}
+            activeSessionId={activeSessionId}
             currentFileContent={code} // Pass the current code state
             projectFiles={chatFileList}
             onShowSuggestion={handleShowSuggestion}
             onSuggestionReject={() => console.log("[LatexEditor] Suggestion rejected.")}
-            onSuggestionApply={handleApplySuggestionCallback}
-            onSuggestionReject={() => console.log("Suggestion rejected")}
-            onFileSelect={handleFileSelect}
-            onFileUpload={handleChatFileUpload}
+            onFileSelect={handleFileSelect} // Keep if ChatWindow needs it
+            onFileUpload={handleChatFileUpload} // Keep if ChatWindow needs it
             initialWidth={350}
             minWidth={280}
             maxWidth={600}
@@ -3030,23 +3296,27 @@ useEffect(() => {
       )}
 
 
-      {/* --- Render Suggestion Modal via Portal --- */}
-     {modalSuggestion && isEditorReady && editorRef.current?.view && typeof document !== 'undefined' && (
-       ReactDOM.createPortal(
-         <SuggestionOverlay
-           key={modalSuggestion.suggestionData.fileId || 'modal'} // Add a key
-           suggestion={modalSuggestion.suggestionData}
-           explanation={modalSuggestion.explanation}
-           originalContent={modalSuggestion.originalContent}
-           onApply={handleApplyAndCloseSuggestion} // Connect to apply/close handler
-           onReject={handleCloseSuggestion}       // Connect to close handler
-           editorView={editorRef.current.view} // Pass the view instance
-           fileName={currentFileName || modalSuggestion.suggestionData.fileId}
-         />,
-         document.body // Render directly into the body
-       )
-     )}
-     {/* --- End Modal Rendering --- */}
+      {/* Modal Rendering */}
+      {modalSuggestion && isEditorReady && editorRef.current?.view && typeof document !== 'undefined' && (
+        ReactDOM.createPortal(
+          <SuggestionOverlay
+            // Use a key that changes when mode changes to force re-mount/state reset
+            key={modalSuggestion.mode + (modalSuggestion.diffHunks?.[0] || modalSuggestion.searchReplaceBlocks?.[0]?.search || 'modal')}
+            mode={modalSuggestion.mode} // Pass the current mode
+            diffHunks={modalSuggestion.diffHunks} // Pass diff hunks (will be undefined in S/R mode)
+            searchReplaceBlocks={modalSuggestion.searchReplaceBlocks} // Pass S/R blocks (undefined in diff mode)
+            explanation={modalSuggestion.explanation}
+            originalContent={originalContentForOverlayDiff} // Use stored original for display consistency
+            isLoadingFallback={isLoadingFallback} // Pass loading state
+            onApplyDiff={handleApplyDiffSuggestion} // Pass specific handler for diffs
+            onApplySearchReplace={handleApplySearchReplace} // Pass specific handler for S/R
+            onReject={handleRejectAndClose} // Use unified reject handler
+            editorView={editorRef.current.view}
+            fileName={currentFileName || 'current file'}
+          />,
+          document.body
+        )
+      )}
 
 
 

@@ -4,13 +4,18 @@ import chatService from '@/services/chatService';
 import {
   X, Code, Send, Plus, Clock, ChevronDown, Paperclip, File, MessageSquare,
   Folder,
-  Download, Check, Loader, Edit // <--- ADD IT HERE
+  Download, Check, Loader, Edit, Image as ImageIcon // <--- ADD IT HERE
 } from 'lucide-react';
 import DiffViewer from './DiffViewer'; // Import the DiffViewer
-import SuggestionOverlay, { SuggestionData } from './SuggestionOverlay';
+import SuggestionOverlay from './SuggestionOverlay';
 import ResizablePanel from './ResizablePanel';
 import { DocumentContextManager } from '../utils/DocumentContextManager';
 import { LaTeXTreeProcessor } from '../utils/LaTeXTreeProcessor';
+import { applyMultipleUnifiedDiffPatches, applyFullContentChange } from '../utils/editorUtils';
+import { ChatFileUtils } from '../utils/ChatFileUtils';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { useChat } from '../context/ChatContext';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 import {
   collection,
   query,
@@ -28,21 +33,21 @@ import {
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/firebase';
 import { EditorView } from '@codemirror/view';
+import { Copy } from 'lucide-react';
+
+const Logger = console;
 
 interface ChatMessage {
   id: string;
   sender: string;
-  content: string; // This holds the EXPLANATION
+  content: string; // Explanation
   timestamp: Date;
-  attachments?: AttachedFile[];
-  mentions?: FileMention[];
-  suggestions?: Array<{ // Array of suggestions
-    text: string; // This holds the FULL LATEX CONTENT
-    range?: { start: number; end: number }; // Range might be less relevant now
-    fileId?: string;
-  }>;
-  isError?: boolean; // Flag for system error messages
+  attachments?: any[];
+  mentions?: any[];
+  diffHunks?: string[]; // Store diffs here instead of suggestions
+  isError?: boolean;
 }
+
 
 
 
@@ -89,12 +94,13 @@ interface ChatWindowProps {
   currentFileName?: string;
   currentFileId?: string;
   currentFileContent?: string;
-  projectFiles?: { id: string, name: string, type: string }[];
   onShowSuggestion?: (
-    suggestionData: SuggestionData, // Import or define SuggestionData
+    diffHunks: string[], // Expect an array of diff strings
     explanation: string,
-    originalContent: string
+    originalContent: string // Still need original editor content for diff base in overlay
   ) => void;
+
+  projectFiles?: { id: string, name: string, type: string }[];
   onSuggestionReject?: () => void;
   onFileSelect?: (fileId: string) => void;
   onFileUpload?: (file: File) => Promise<string>;
@@ -182,6 +188,8 @@ const RESIZE_STYLES = `
   }
 `;
 
+
+
 const ChatWindow: React.FC<ChatWindowProps> = ({
   isOpen,
   onClose,
@@ -203,7 +211,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 }) => {
   // State for chat sessions
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionId] = useState<string | null>(null);
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -215,6 +223,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const [showChatHistory, setShowChatHistory] = useState<boolean>(false);
   const [dragActive, setDragActive] = useState(false);
   const [width, setWidth] = useState(initialWidth);
+  const { activeSessionId: contextActiveSessionId, setActiveSessionId } = useChat();
 
   // File mention state
   const [mentionSearch, setMentionSearch] = useState<string>('');
@@ -224,12 +233,16 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const editorRef = useRef<{ view?: EditorView }>(null); // Assuming LatexEditor passes this down or you get it
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
 
   // Upload error state
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Added for resize performance
   const [isResizing, setIsResizing] = useState(false);
+
+  const chatContext = useChat(); // Get the whole context object
   const rafRef = useRef<number | null>(null);
   const lastAppliedWidth = useRef(initialWidth);
   const MOVEMENT_THRESHOLD = 2; // Minimum movement in pixels to trigger resize
@@ -243,6 +256,80 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const unsubscribeRef = useRef<() => void | null>(null);
   const mentionListRef = useRef<HTMLDivElement>(null);
   console.log('[ChatWindow Render] Editor Ref View available:', !!editorRef?.current?.view);
+
+
+  const parseMentions = useCallback((message: string): { text: string, mentions: FileMention[] } => {
+    const mentions: FileMention[] = [];
+    const MENTION_REGEX = /@\[([^\]]+)\]\(([^)]+)\)/g; // Define regex locally or import
+
+    let match;
+    while ((match = MENTION_REGEX.exec(message)) !== null) {
+      const name = match[1];
+      const id = match[2];
+      const fileInfo = projectFiles.find(f => f.id === id); // Use projectFiles prop
+      const type = fileInfo?.type === 'folder' ? 'folder' : 'file';
+      mentions.push({ id, name, type });
+    }
+    const cleanText = message.replace(MENTION_REGEX, '@$1');
+    return { text: cleanText, mentions };
+  }, [projectFiles]); // Depend on projectFiles prop
+
+  // --- Mention Rendering Logic (Integrated) ---
+  // Define this inside the ChatWindow component function scope
+  const renderTextWithMentions = useCallback((
+    text: string,
+    mentions: FileMention[] = []
+  ): React.ReactNode => {
+    if (!mentions || mentions.length === 0) return text;
+
+    const mentionMap = new Map<string, FileMention>();
+    mentions.forEach(mention => mentionMap.set(mention.name, mention));
+    const parts = text.split('@');
+
+    if (parts.length === 1) return text;
+
+    const elementsToRender: React.ReactNode[] = [parts[0]];
+    parts.slice(1).forEach((part, index) => {
+      const mentionName = mentions.find(m => part.startsWith(m.name))?.name;
+      if (mentionName) {
+        const mention = mentionMap.get(mentionName);
+        const restOfText = part.substring(mentionName.length);
+        elementsToRender.push(
+          <React.Fragment key={`mention-${index}`}>
+            <span
+              className="inline-flex items-center bg-blue-600/30 px-1.5 rounded-md text-blue-300 cursor-pointer hover:bg-blue-600/40"
+              onClick={() => mention && onFileSelect && onFileSelect(mention.id)} // Use onFileSelect prop
+            >
+              @{mentionName}
+            </span>
+            {restOfText}
+          </React.Fragment>
+        );
+      } else {
+        elementsToRender.push(<React.Fragment key={`text-${index}`}>@{part}</React.Fragment>);
+      }
+    });
+    return <React.Fragment>{elementsToRender}</React.Fragment>;
+  }, [onFileSelect]); // Depend on onFileSelect prop
+
+  // --- Helper Function to get File Content ---
+  const getFileContent = useCallback(async (fileId: string): Promise<string | null> => {
+    Logger.log(`[getFileContent] Fetching content for fileId: ${fileId}`);
+    try {
+      const result = await ChatFileUtils.getFileContent(fileId);
+      if (result.success && typeof result.content === 'string') {
+        Logger.log(`[getFileContent] Success for ${fileId}`);
+        return result.content;
+      }
+      Logger.warn(`[getFileContent] Failed for ${fileId}: ${result.error}`);
+      return null;
+    } catch (error) {
+      Logger.error(`[getFileContent] Exception for ${fileId}:`, error);
+      return null;
+    }
+  }, []); // ChatFileUtils is static, no dependencies needed
+
+
 
   useEffect(() => {
     const initializeChat = async () => {
@@ -280,19 +367,16 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   // Load chat sessions from Firestore
   useEffect(() => {
     const loadChatSessions = async () => {
-      if (!projectId || !userId) return;
-
+      if (!projectId || !userId) {
+        console.warn('[ChatWindow Load] Missing projectId or userId');
+        setLoading(false); // Stop loading if cannot proceed
+        return;
+      }
       try {
-        setLoading(true);
 
-        // Query for chat sessions related to this project and user
+        console.log('[ChatWindow Load] Fetching sessions...');
         const chatSessionsRef = collection(db, "chatSessions");
-        const q = query(
-          chatSessionsRef,
-          where("projectId", "==", projectId),
-          where("userId", "==", userId),
-          orderBy("lastUpdated", "desc")
-        );
+        const q = query(chatSessionsRef, where("projectId", "==", projectId), where("userId", "==", userId), orderBy("lastUpdated", "desc"))
 
         const querySnapshot = await getDocs(q);
         const sessions: ChatSession[] = [];
@@ -346,20 +430,31 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         }
 
         setChatSessions(sessions);
+        console.log(`[ChatWindow Load] Found ${sessions.length} sessions.`);
+
 
         // Create a default session if none exist
         if (sessions.length === 0) {
-          await createNewChatInFirestore();
+          console.log('[ChatWindow Load] No sessions found, creating new one...');
+          const newSession = await createNewChatInFirestore(); // Ensure this uses context setter
+          if (newSession) {
+            console.log(`[ChatWindow Load] New session created and set active: ${newSession.id}`);
+          } else {
+            console.error('[ChatWindow Load] Failed to create new session.');
+            chatContext.setActiveSessionId(null); // Explicitly set null in context on failure
+          }
         } else {
-          // Set the most recent session as active
-          setActiveSessionId(sessions[0].id);
-          setActiveSession(sessions[0]);
+          console.log(`[ChatWindow Load] Setting active session from existing: ${sessions[0].id}`);
+          chatContext.setActiveSessionId(sessions[0].id); // Set ID in context
+          // setActiveSession(sessions[0]); // Let the sync effect handle setting local state
         }
-
-        setLoading(false);
       } catch (error) {
-        console.error("Error loading chat sessions:", error);
+        console.error("[ChatWindow Load] Error loading/setting sessions:", error);
+        chatContext.setActiveSessionId(null); // Set context ID to null on error
+        setActiveSession(null); // Clear local state too
+      } finally {
         setLoading(false);
+        console.log('[ChatWindow Load] Loading finished.');
       }
     };
 
@@ -373,72 +468,68 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         unsubscribeRef.current();
       }
     };
-  }, [projectId, userId, isOpen]);
+  }, [projectId, userId, isOpen, chatContext.setActiveSessionId]);
 
   // Subscribe to updates for the active session
+  // Subscribe to updates for the active session
+  // Inside the useEffect hook depending on [contextActiveSessionId]
   useEffect(() => {
-    const subscribeToActiveSession = () => {
-      // Clean up previous subscription
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-        unsubscribeRef.current = null;
+    let unsubscribe: (() => void) | null = null;
+    const currentSessionId = contextActiveSessionId; // Capture context ID
+
+    const subscribeToMessages = () => {
+      if (unsubscribe) unsubscribe(); // Clean previous listener
+
+      if (!currentSessionId) {
+        Logger.log("[ChatWindow Listener] No active session ID, clearing messages.");
+        setChatMessages([]); // Clear displayed messages
+        return;
       }
 
-      if (!activeSessionId) return;
-
-      // Set up listener for messages in the active session
-      const messagesRef = collection(db, "chatSessions", activeSessionId, "messages");
+      Logger.log(`[ChatWindow Listener] Subscribing to messages for session: ${currentSessionId}`);
+      const messagesRef = collection(db, "chatSessions", currentSessionId, "messages");
       const messagesQuery = query(messagesRef, orderBy("timestamp", "asc"));
 
-      const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
+      unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
+        // --- SIMPLIFIED LOGIC ---
+        Logger.log(`[ChatWindow Listener] Firestore snapshot for ${currentSessionId}. Docs: ${snapshot.docs.length}, PendingWrites: ${snapshot.metadata.hasPendingWrites}`);
+
         const updatedMessages: ChatMessage[] = snapshot.docs.map(doc => {
           const data = doc.data();
+          // Map Firestore data to ChatMessage interface
           return {
-            id: doc.id,
-            sender: data.sender,
-            content: data.content,
-            // SAFER TIMESTAMP HANDLING:
-            timestamp:
-              data.timestamp instanceof Timestamp
-                ? data.timestamp.toDate()
-                : data.timestamp instanceof Date
-                  ? data.timestamp
-                  : new Date(),
+            id: doc.id, // Use the REAL Firestore ID
+            sender: data.sender || 'Unknown',
+            content: data.content || '',
+            timestamp: data.timestamp instanceof Timestamp ? data.timestamp.toDate() : new Date(),
             attachments: data.attachments || [],
             mentions: data.mentions || [],
-            suggestions: data.suggestions || []  // <--- Use "suggestions" array
+            diffHunks: data.diffHunks || [],
+            isError: data.isError || false,
           };
         });
 
-        setActiveSession(prev => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            messages: updatedMessages
-          };
-        });
+        setChatMessages(updatedMessages); // <-- Directly update state with the full list
 
-        setChatSessions(prev =>
-          prev.map(session =>
-            session.id === activeSessionId
-              ? { ...session, messages: updatedMessages }
-              : session
-          )
-        );
+        Logger.log(`[ChatWindow Listener] Updated chatMessages state with ${updatedMessages.length} messages.`);
+        // --- END SIMPLIFIED LOGIC ---
+
+      }, (error) => {
+        Logger.error(`[ChatWindow Listener] Error for session ${currentSessionId}:`, error);
+        setChatMessages([]); // Clear messages on error
       });
-
-
-      unsubscribeRef.current = unsubscribe;
     };
 
-    subscribeToActiveSession();
+    subscribeToMessages();
 
+    // Cleanup function
     return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
+      if (unsubscribe) {
+        Logger.log(`[ChatWindow Listener] Unsubscribing from session: ${currentSessionId}`);
+        unsubscribe();
       }
     };
-  }, [activeSessionId]);
+  }, [contextActiveSessionId]); // Re-run ONLY when the context activeSessionId changes
 
   // Focus input when chat opens
   useEffect(() => {
@@ -495,18 +586,181 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   }, []);
 
   const renderMessageContent = (msg: ChatMessage): JSX.Element => {
-    const contentToRender = msg.content || "";
 
-    // Render mentions if applicable
-    if (msg.mentions && msg.mentions.length > 0) {
-      // Use the existing renderMessageWithMentions helper if you still have it
-      // If not, implement basic mention rendering here or simply return the text for now
-      // Assuming renderMessageWithMentions exists:
-      return <>{renderMessageWithMentions(contentToRender, msg.mentions)}</>;
+    // Nested helper to process inline code segments
+    // It needs the outer `renderTextWithMentions` which correctly handles mentions
+    const processInlineCode = (
+      text: string,
+      regex: RegExp
+    ): React.ReactNode[] => {
+      const inlineParts: React.ReactNode[] = [];
+      let lastInlineIndex = 0;
+
+      text.replace(regex, (match, code, offset) => {
+        // Render text before the inline code (passing through mention renderer)
+        if (offset > lastInlineIndex) {
+          inlineParts.push(renderTextWithMentions(text.substring(lastInlineIndex, offset), msg.mentions));
+        }
+        // Render the inline code itself
+        inlineParts.push(
+          <code key={`inline-code-${offset}-${msg.id}`} className="bg-gray-800/70 text-red-300/90 px-1 py-0.5 rounded text-[0.85em] font-mono mx-[1px]">
+            {code}
+          </code>
+        );
+        lastInlineIndex = offset + match.length;
+        return ''; // Necessary for replace function
+      });
+
+      // Render any remaining text after the last inline code
+      if (lastInlineIndex < text.length) {
+        inlineParts.push(renderTextWithMentions(text.substring(lastInlineIndex), msg.mentions));
+      }
+      return inlineParts;
+    };
+
+    // --- Main Rendering Logic ---
+    const contentToRender = msg.content || "";
+    const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+    const inlineCodeRegex = /`([^`]+?)`/g; // Non-greedy match for inline code
+    const parts: React.ReactNode[] = []; // Array to hold JSX elements and strings
+    let lastIndex = 0;
+
+    // 1. Process Block Code
+    contentToRender.replace(codeBlockRegex, (match, lang, code, offset) => {
+      // Add the text segment *before* this code block (processing it for inline code/mentions)
+      if (offset > lastIndex) {
+        const textPart = contentToRender.substring(lastIndex, offset);
+        parts.push(...processInlineCode(textPart, inlineCodeRegex)); // Use the helper
+      }
+
+      // Add the formatted code block element
+      const language = lang || 'latex'; // Default language
+      parts.push(
+        <div key={`code-block-${offset}-${msg.id}`} className="my-2 relative group text-left"> {/* Ensure text-left */}
+          <SyntaxHighlighter
+            language={language}
+            style={vscDarkPlus}
+            customStyle={{
+              margin: 0,
+              padding: '0.75em', // Reduced padding slightly
+              borderRadius: '4px',
+              fontSize: '0.8rem', // Consistent small font size
+              backgroundColor: '#161616', // Darker bg for contrast
+            }}
+            wrapLongLines={true}
+            PreTag="div" // Use div for better wrapping control
+          >
+            {code.trim()}
+          </SyntaxHighlighter>
+          <button
+            onClick={() => copyToClipboard(code.trim())}
+            className="absolute top-1 right-1 p-1 bg-gray-700/50 text-gray-400 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-600 hover:text-gray-200"
+            title="Copy code"
+          >
+            <Copy className="h-3 w-3" /> {/* Smaller copy icon */}
+          </button>
+        </div>
+      );
+
+      lastIndex = offset + match.length;
+      return ''; // Necessary for replace behavior
+    });
+
+    // 2. Process Remaining Text (after the last code block)
+    if (lastIndex < contentToRender.length) {
+      const textPart = contentToRender.substring(lastIndex);
+      parts.push(...processInlineCode(textPart, inlineCodeRegex)); // Use the helper
     }
 
-    // Basic rendering for explanation or error (handle potential HTML later if needed)
-    return <p className="text-sm whitespace-pre-wrap">{contentToRender}</p>;
+    // 3. Prepare Image Thumbnails (only for user messages with valid image attachments)
+    const imageAttachments = msg.sender === 'You'
+      ? msg.attachments?.filter(att => att.type?.startsWith('image/') && att.url) // Allow https too
+      : [];
+
+    const nonImageAttachments = msg.attachments?.filter(att => !att.type?.startsWith('image/')) || [];
+
+
+
+    // 4. Combine all parts and image thumbnails
+    return (
+      <div className="text-sm whitespace-pre-wrap break-words">
+        {/* Render the processed text and code blocks */}
+        {parts}
+
+        {/* Render Image Thumbnails Below Text if they exist */}
+        {/* Render Image Thumbnails Below Text */}
+        {imageAttachments.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {imageAttachments.map((att, idx) => (
+              <img
+                // --- FIX: Use robust key ---
+                key={att.id || `img-att-${idx}-${msg.id}`}
+                src={att.url} // Assumes URL is correct (data or https)
+                alt={att.name || 'Attached image'}
+                className="max-w-[60px] max-h-[60px] xs:max-w-[80px] xs:max-h-[80px] object-contain rounded border border-gray-500/50 cursor-pointer hover:opacity-80 transition-opacity"
+                onClick={() => setImagePreviewUrl(att.url)}
+                title={`Click to view: ${att.name}`}
+              />
+            ))}
+          </div>
+        )}
+        {nonImageAttachments.length > 0 && (
+          <div className="mt-2 space-y-1 border-t border-gray-600/50 pt-1.5">
+            {nonImageAttachments.map((file, idx) => ( // Use file and idx
+              <div
+                // --- VERIFY: Robust key is used ---
+                key={file.id || `file-att-${idx}-${msg.id}`}
+                className="bg-gray-800/50 rounded px-1.5 py-0.5 flex items-center text-xs"
+              >
+                {getFileIcon(file.type, file.name)}
+                <span className="text-gray-300 truncate mr-2 flex-1" title={file.name}>{file.name}</span>
+                {file.url && (
+                  <a href={file.url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline ml-auto text-xs flex-shrink-0">
+                    View
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }; // End of renderMessageContent
+
+  // --- Make sure copyToClipboard helper is also defined within ChatWindow or imported ---
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      Logger.log("Code copied!");
+      // Optionally show a toast notification here
+    }).catch(err => {
+      Logger.error("Failed to copy code:", err);
+    });
+  };
+
+
+  // Helper function to process inline code within a text segment
+  const processInlineCode = (text: string, regex: RegExp): (string | JSX.Element)[] => {
+    const inlineParts: (string | JSX.Element)[] = [];
+    let lastInlineIndex = 0;
+    text.replace(regex, (match, code, offset) => {
+      // Add text before inline code
+      if (offset > lastInlineIndex) {
+        inlineParts.push(text.substring(lastInlineIndex, offset));
+      }
+      // Add inline code element
+      inlineParts.push(
+        <code key={`inline-code-${offset}`} className="bg-gray-800/80 text-red-300 px-1.5 py-0.5 rounded text-[0.85em] font-mono">
+          {code}
+        </code>
+      );
+      lastInlineIndex = offset + match.length;
+      return '';
+    });
+    // Add remaining text after last inline code
+    if (lastInlineIndex < text.length) {
+      inlineParts.push(text.substring(lastInlineIndex));
+    }
+    return inlineParts;
   };
 
   const handleViewSuggestionClick = (msg: ChatMessage) => {
@@ -636,38 +890,28 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   };
 
   // Create a new chat session in Firestore
-  const createNewChatInFirestore = async () => {
+  const createNewChatInFirestore = useCallback(async () => {
     try {
-      // Create a new session document
+      console.log('[createNewChat] Creating Firestore session...');
       const sessionRef = await addDoc(collection(db, "chatSessions"), {
-        userId: userId,
-        projectId: projectId,
-        title: "New Chat",
-        createdAt: serverTimestamp(),
-        lastUpdated: serverTimestamp(),
-        modelId: 'gpt-4o'
+        userId: userId, projectId: projectId, title: "New Chat",
+        createdAt: serverTimestamp(), lastUpdated: serverTimestamp(), modelId: 'gpt-4o'
       });
-
-      // Create a new session object
       const newSession: ChatSession = {
-        id: sessionRef.id,
-        title: "New Chat",
-        timestamp: new Date(),
-        messages: [],
-        currentModel: AVAILABLE_MODELS[0]
+        id: sessionRef.id, title: "New Chat", timestamp: new Date(), messages: [], currentModel: AVAILABLE_MODELS[0]
       };
-
-      // Update state
-      setChatSessions(prev => [newSession, ...prev]);
-      setActiveSessionId(newSession.id);
-      setActiveSession(newSession);
-
+      console.log(`[createNewChat] Session created: ${sessionRef.id}. Updating context...`);
+      chatContext.setActiveSessionId(newSession.id); // Use context setter
+      // setChatSessions(prev => [newSession, ...prev]); // Update cache if needed here or rely on listener
+      // setActiveSession(newSession); // Let sync effect handle this
       return newSession;
     } catch (error) {
-      console.error("Error creating new chat:", error);
-      throw error;
+      console.error("[createNewChat] Error:", error);
+      chatContext.setActiveSessionId(null); // Set context null on error
+      return null;
     }
-  };
+  }, [userId, projectId, chatContext.setActiveSessionId]); // Dependencies
+
 
   // Create a new chat and set it as active
   const createNewChat = async () => {
@@ -680,81 +924,37 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   };
 
   // Select a chat session
-  const selectChatSession = async (sessionId: string) => {
-    if (!sessionId || sessionId === activeSessionId) {
+  const selectChatSession = useCallback(async (sessionId: string) => {
+    console.log(`[selectChatSession] Selecting session: ${sessionId}`);
+    if (!sessionId || sessionId === chatContext.activeSessionId) {
+      console.log(`[selectChatSession] Already active or invalid ID.`);
       setShowChatHistory(false);
       return;
     }
-
-    // Find the session in our cached data
-    const session = chatSessions.find(s => s.id === sessionId);
-
-    if (session) {
-      setActiveSessionId(sessionId);
-      setActiveSession(session);
-    } else {
-      // If not found (unlikely), fetch it from Firestore
-      try {
-        const sessionRef = doc(db, "chatSessions", sessionId);
-        const sessionDoc = await getDoc(sessionRef);
-
-        if (sessionDoc.exists()) {
-          const data = sessionDoc.data();
-
-          // Load messages
-          const messagesRef = collection(db, "chatSessions", sessionId, "messages");
-          const messagesQuery = query(messagesRef, orderBy("timestamp", "asc"));
-          const messagesSnapshot = await getDocs(messagesQuery);
-
-          const messages: ChatMessage[] = messagesSnapshot.docs.map(msgDoc => {
-            const msgData = msgDoc.data();
-            return {
-              id: msgDoc.id,
-              sender: msgData.sender,
-              content: msgData.content,
-              // SAFER TIMESTAMP HANDLING:
-              timestamp:
-                msgData.timestamp instanceof Timestamp
-                  ? msgData.timestamp.toDate()
-                  : msgData.timestamp instanceof Date
-                    ? msgData.timestamp
-                    : new Date(),
-              attachments: msgData.attachments || [],
-              mentions: msgData.mentions || [],
-              suggestions: msgData.suggestions || []
-            };
-          });
-
-          // Find the model
-          const modelId = data.modelId || 'gpt-4o';
-          const model = AVAILABLE_MODELS.find(m => m.id === modelId) || AVAILABLE_MODELS[0];
-
-          const loadedSession: ChatSession = {
-            id: sessionId,
-            title: data.title || 'New Chat',
-            // SAFER TIMESTAMP HANDLING:
-            timestamp:
-              data.timestamp instanceof Timestamp
-                ? data.timestamp.toDate()
-                : data.timestamp instanceof Date
-                  ? data.timestamp
-                  : new Date(),
-            messages: messages,
-            currentModel: model
-          };
-
-          setActiveSession(loadedSession);
-
-          // Add to sessions cache
-          setChatSessions(prev => [loadedSession, ...prev.filter(s => s.id !== sessionId)]);
-        }
-      } catch (error) {
-        console.error("Error loading chat session:", error);
-      }
-    }
-
+    chatContext.setActiveSessionId(sessionId); // Set context ID FIRST
     setShowChatHistory(false);
-  };
+    // Local state update (`setActiveSession`) is handled by the sync useEffect
+  }, [chatContext.activeSessionId, chatContext.setActiveSessionId]); // Dependencies
+
+  // --- Sync local activeSession with context ID ---
+  useEffect(() => {
+    const contextSessionId = chatContext.activeSessionId; // Read ID from context object
+    console.log(`[ChatWindow Sync Effect] Context ID: ${contextSessionId}, Local Active Session ID: ${activeSession?.id}`);
+    const sessionFromCache = chatSessions.find(s => s.id === contextSessionId);
+    if (sessionFromCache) {
+      if (activeSession?.id !== sessionFromCache.id) {
+        setActiveSession(sessionFromCache);
+        console.log(`[ChatWindow Sync Effect] Synced local activeSession state to context ID: ${contextSessionId}`);
+      }
+    } else if (contextSessionId && !loading) {
+      if (activeSession !== null) setActiveSession(null);
+      console.warn(`[ChatWindow Sync Effect] Context activeSessionId ${contextSessionId} not in cache.`);
+    } else if (!contextSessionId) {
+      if (activeSession !== null) setActiveSession(null);
+      console.log(`[ChatWindow Sync Effect] Cleared local activeSession state as context ID is null.`);
+    }
+  }, [chatContext.activeSessionId, chatSessions, loading, activeSession]); // Use context object field
+
 
   // Read file as data URL
   const readAsDataURL = (file: File): Promise<string> => {
@@ -814,30 +1014,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         inputRef.current.focus();
       }
     }, 0);
-  };
-
-  // Parse message to extract mentions
-  const parseMentions = (message: string): { text: string, mentions: { id: string, name: string, type: string }[] } => {
-    const mentionRegex = /@\[([^\]]+)\]\(([^)]+)\)/g;
-    const mentions: { id: string, name: string, type: string }[] = [];
-
-    // Find all mentions in the format @[name](id)
-    let match;
-    while ((match = mentionRegex.exec(message)) !== null) {
-      const name = match[1];
-      const id = match[2];
-
-      // Try to find the file type
-      const fileInfo = projectFiles.find(f => f.id === id);
-      const type = fileInfo?.type || 'file';
-
-      mentions.push({ id, name, type });
-    }
-
-    // Replace mentions with plain text version for storage
-    const text = message.replace(mentionRegex, '@$1');
-
-    return { text, mentions };
   };
 
   // Render message with mentions highlighted
@@ -969,112 +1145,178 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
   // Send a message to the active chat session
   // In components/ChatWindow.tsx - Update handleSendMessage method
-  const handleSendMessage = async (e: React.FormEvent) => {
+  // In components/ChatWindow.tsx - Update handleSendMessage method
+  const handleSendMessage = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
+    console.log('[handleSendMessage] === Function Start ===');
 
-    if (!newMessage.trim() && attachedFiles.length === 0) return;
-    if (!activeSessionId) return;
+    // --- Read the ID from context ---
+    const currentContextSessionId = chatContext.activeSessionId; // Use context ID
+
+    // --- Log Initial State ---
+    console.log(`[handleSendMessage] Context Check - activeSessionId: ${currentContextSessionId}`);
+    console.log(`[handleSendMessage] Prop Check - projectId: ${projectId}`);
+    console.log(`[handleSendMessage] Prop Check - userId: ${userId}`);
+    console.log(`[handleSendMessage] State Check - loading: ${loading}`);
+    console.log(`[handleSendMessage] State Check - newMessage: "${newMessage}"`);
+    console.log(`[handleSendMessage] State Check - attachedFiles: ${attachedFiles.length}`);
+
+    // --- Consolidated Guard Clauses ---
+    if (loading) {
+      console.warn('[handleSendMessage] Aborting: Chat is still loading sessions.');
+      alert("Chat is still loading, please wait.");
+      return;
+    }
+    if (!currentContextSessionId) {
+      console.error('[handleSendMessage] Aborting: CRITICAL - activeSessionId from context is null/undefined!');
+      alert("Error: No active chat session. Please select or create a chat.");
+      return;
+    }
+    if (!newMessage.trim() && attachedFiles.length === 0) {
+      console.warn('[handleSendMessage] Aborting: No message content or attachments.');
+      return; // Silently abort if nothing to send
+    }
+    if (!projectId || !userId) {
+      console.error('[handleSendMessage] Aborting: CRITICAL - projectId or userId is missing!');
+      alert("Error: Missing critical project/user information.");
+      return;
+    }
+    // --- End Guard Clauses ---
+
+
+    const messageToSend = newMessage;
+    const filesToSend = [...attachedFiles]; // Capture state before clearing
+
+    // --- Optimistic UI Update ---
+    setNewMessage('');
+    setAttachedFiles([]);
+    console.log('[handleSendMessage] Input state cleared.');
+
+    const { mentions: parsedMentionsForOptimistic } = parseMentions(messageToSend); // Parse for optimistic display
+    const tempUserMessage: ChatMessage = {
+      id: `temp-${Date.now()}-${Math.random()}`, // Unique temp ID
+      sender: 'You',
+      content: messageToSend,
+      timestamp: new Date(), // Client time
+      attachments: filesToSend.map(f => ({ // Basic info for display
+        id: f.id, name: f.name, type: f.type, url: f.url
+      })),
+      mentions: parsedMentionsForOptimistic,
+      isError: false,
+    };
+    setChatMessages(prevMessages => [...prevMessages, tempUserMessage]); // Add to UI state
+    console.log('[handleSendMessage] Optimistically added user message to UI.');
+    // --- END OPTIMISTIC UI UPDATE ---
 
     try {
-      // Parse mentions and get clean text
-      const { text: cleanText, mentions } = parseMentions(newMessage);
+      console.log('[handleSendMessage] Preparing message data for service...');
 
-      // Save a reference to any file attachments
-      const attachmentData = [];
-      if (attachedFiles.length > 0) {
-        for (const file of attachedFiles) {
-          attachmentData.push({
-            id: file.id,
-            name: file.name,
-            type: file.type,
-            url: file.url,
-            content: file.content
-          });
+      // 1. Parse Mentions (for service)
+      // We re-use the function, it's cheap
+      const { text: cleanText, mentions } = parseMentions(messageToSend);
+      console.log(`[handleSendMessage] Mentions parsed for service. Count: ${mentions.length}`);
+
+      // 2. Prepare Attachment Data (Pass full info needed by service/LLM)
+      const attachmentData = filesToSend.map(file => ({
+        id: file.id,
+        name: file.name,
+        type: file.type,
+        url: file.url, // <-- Make sure this uses the URL from the attachedFiles state
+        size: file.size,
+        // content: file.content // Only if needed by LLM explicitly
+      }));
+
+      console.log(`[handleSendMessage] Attachment data prepared for service. Count: ${attachmentData.length}`);
+
+      // 3. Prepare Current File Data
+      const currentFileData = currentFileId ? {
+        id: currentFileId,
+        name: currentFileName || 'Unnamed File',
+        content: currentFileContent || '' // Ensure it's a string
+      } : undefined;
+      console.log(`[handleSendMessage] Current file context prepared: ${currentFileData ? currentFileData.name : 'None'}`);
+
+      // 4. Fetch Mentioned Files Content
+      let validMentionedFiles: Array<{ id: string; name: string; content: string }> = [];
+      if (mentions.length > 0) {
+        console.log('[handleSendMessage] Fetching mentioned file content...');
+        try {
+          const results = await Promise.all(
+            mentions.filter(mention => mention.id !== currentFileId) // Avoid re-fetching current file
+              .map(async (mention) => {
+                const fileContent = await getFileContent(mention.id); // Use the memoized helper
+                if (fileContent === null) {
+                  console.warn(`[handleSendMessage] Content fetch failed for mentioned file: ${mention.name} (${mention.id})`);
+                  return null;
+                }
+                return { id: mention.id, name: mention.name, content: fileContent };
+              })
+          );
+          validMentionedFiles = results.filter(Boolean) as Array<{ id: string; name: string; content: string }>;
+          console.log(`[handleSendMessage] Fetched content for ${validMentionedFiles.length} / ${mentions.length} mentioned files.`);
+        } catch (fetchError) {
+          console.error("[handleSendMessage] Error fetching mentioned file content:", fetchError);
+          alert("Warning: Error fetching content for mentioned files. Sending message without full context.");
+          // Continue without full context, or you could return here if context is critical
         }
       }
 
-      // Clear input state
-      setNewMessage('');
-      setAttachedFiles([]);
+      // --- Send to Service ---
+      const serviceParams: any = { // Use 'any' temporarily if SendMessageParams is strict
+        content: cleanText, // The text part of the user message
+        projectId,
+        sessionId: currentContextSessionId, // Use the validated ID from context
+        userId,
+        userName: 'You',
+        model: activeSession?.currentModel?.id || 'gpt-4o', // Use selected model or default
+        currentFile: currentFileData,
+        mentionedFiles: validMentionedFiles,
+        attachments: attachmentData, // <-- *** ADDED THIS LINE *** Pass the prepared attachment data
+      };
+      console.log('[handleSendMessage] Calling chatService.sendMessage with sessionId:', serviceParams.sessionId);
 
-      // Prepare current file data safely
-      const currentFileData = currentFileId ? {
-        id: currentFileId,
-        name: currentFileName || '',
-        content: currentFileContent || ''
-      } : undefined;
+      const response = await chatService.sendMessage(serviceParams);
+      console.log('[handleSendMessage] chatService response received:', response);
 
-      try {
-        // Get file content for mentioned files
-        const mentionedFilesData = await Promise.all(
-          mentions.map(async (mention) => {
-            // Skip if it's the current file
-            if (mention.id === currentFileId) return null;
-
-            // Get file content
-            const fileContent = await getFileContent(mention.id);
-
-            return {
-              id: mention.id,
-              name: mention.name,
-              content: fileContent || ''
-            };
-          })
-        );
-
-        // Filter out nulls
-        const validMentionedFiles = mentionedFilesData.filter(Boolean);
-
-        // Now use the chat service to send the message and get response
-        const response = await chatService.sendMessage({
-          content: cleanText,
-          projectId,
-          sessionId: activeSessionId,
-          userId,
-          userName: 'You',
-          model: activeSession?.currentModel?.id || 'gpt-4o',
-          currentFile: currentFileData,
-          mentionedFiles: validMentionedFiles
-        });
-      } catch (sendError) {
-        console.error("Error sending message:", sendError);
-        // Show an error message to the user - avoid trying to access properties of the error
-        const errorMessage = sendError instanceof Error ? sendError.message : "Unknown error sending message";
-        console.error(`Error sending message: ${errorMessage}`);
-
-        // Show an error notification to the user
-        // (Implement this based on your UI feedback system)
+      // --- Handle Service Response ---
+      if (response.error) {
+        console.error(`[handleSendMessage] Error received from chatService: ${response.error}`);
+        alert(`Failed to process message: ${response.error}`);
+        // Remove the optimistic message if the backend call failed
+        setChatMessages(prev => prev.filter(msg => msg.id !== tempUserMessage.id));
+      } else {
+        console.log('[handleSendMessage] Message processing initiated successfully by service.');
+        // The Firestore listener will handle adding the real user message and the assistant response.
       }
+
     } catch (error) {
-      console.error("Error preparing message:", error);
-      // Handle general errors
+      console.error("[handleSendMessage] CRITICAL UNEXPECTED ERROR:", error);
+      alert(`An critical error occurred while sending the message: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      // Remove the optimistic message on critical error
+      setChatMessages(prev => prev.filter(msg => msg.id !== tempUserMessage.id));
+    } finally {
+      console.log('[handleSendMessage] === Function End ===');
     }
-  };
+  }, [
+    // Dependencies
+    newMessage,
+    attachedFiles,
+    contextActiveSessionId, // Use context value
+    projectId,
+    userId,
+    loading, // Include loading state
+    currentFileId,
+    currentFileName,
+    currentFileContent,
+    projectFiles, // Needed for parsing mentions
+    activeSession, // Needed for selected model ID
+    setNewMessage,
+    setAttachedFiles,
+    parseMentions, // Local memoized function
+    getFileContent, // Local memoized function
+    setChatMessages // Needed for optimistic update and error rollback
+  ]);
 
-  // Add this helper function to get file content
-  const getFileContent = async (fileId: string): Promise<string> => {
-    try {
-      // First try in projectFiles
-      let fileRef = doc(db, "projectFiles", fileId);
-      let fileDoc = await getDoc(fileRef);
-
-      // If not found, try project_files
-      if (!fileDoc.exists()) {
-        fileRef = doc(db, "project_files", fileId);
-        fileDoc = await getDoc(fileRef);
-      }
-
-      if (fileDoc.exists()) {
-        const data = fileDoc.data();
-        return data.content || '';
-      }
-
-      return '';
-    } catch (error) {
-      console.error("Error getting file content:", error);
-      return '';
-    }
-  };
 
   // Optimized panel resize handler using requestAnimationFrame
   const handlePanelResize = useCallback((newSize: number) => {
@@ -1246,112 +1488,86 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const uploadFiles = async (files: File[]) => {
     setIsAttaching(true);
     setUploadError(null);
+    const currentProgress = { ...uploadProgress }; // Copy current progress state
 
-    try {
-      const newAttachments: AttachedFile[] = [];
+    const uploadPromises = files.map(async (file) => {
+      const fileName = file.name;
+      currentProgress[fileName] = 0; // Initialize progress for this file
+      setUploadProgress(prev => ({ ...prev, [fileName]: 0 })); // Update UI immediately
 
-      for (const file of files) {
-        try {
-          // Update progress to "starting"
-          setUploadProgress(prev => ({ ...prev, [file.name]: 0 }));
+      try {
+        // Simulate initial delay/progress
+        await new Promise(res => setTimeout(res, 50));
+        currentProgress[fileName] = 10;
+        setUploadProgress(prev => ({ ...prev, [fileName]: 10 }));
 
-          // Determine file type
-          const isTextFile = file.type === 'text/plain' ||
-            file.name.endsWith('.tex') ||
-            file.name.endsWith('.md') ||
-            file.name.endsWith('.bib');
+        // --- Call the updated ChatFileUtils method ---
+        const result = await ChatFileUtils.uploadChatFile(file, projectId, userId);
+        // -------------------------------------------
 
-          const isImage = file.type.startsWith('image/');
+        // Simulate final processing delay/progress
+        await new Promise(res => setTimeout(res, 100));
+        currentProgress[fileName] = result.success ? 80 : -1; // Mark error or near complete
+        setUploadProgress(prev => ({ ...prev, [fileName]: result.success ? 80 : -1 }));
 
-          // Process based on type
-          let fileUrl = '';
-          let fileContent = '';
-
-          if (isTextFile) {
-            // For text files, read content
-            setUploadProgress(prev => ({ ...prev, [file.name]: 30 }));
-            fileContent = await readAsText(file);
-
-            // Upload to Firebase Storage
-            if (onFileUpload) {
-              setUploadProgress(prev => ({ ...prev, [file.name]: 60 }));
-              fileUrl = await onFileUpload(file);
-            } else {
-              // Use Firebase Storage directly
-              const storageRef = ref(storage, `chats/${projectId}/${Date.now()}_${file.name}`);
-              await uploadBytes(storageRef, file);
-              fileUrl = await getDownloadURL(storageRef);
-            }
-          } else if (isImage) {
-            // For images, create a thumbnail preview
-            setUploadProgress(prev => ({ ...prev, [file.name]: 30 }));
-            fileContent = await readAsDataURL(file);
-
-            // Upload to Firebase Storage
-            if (onFileUpload) {
-              setUploadProgress(prev => ({ ...prev, [file.name]: 60 }));
-              fileUrl = await onFileUpload(file);
-            } else {
-              // Use Firebase Storage directly
-              const storageRef = ref(storage, `chats/${projectId}/${Date.now()}_${file.name}`);
-              await uploadBytes(storageRef, file);
-              fileUrl = await getDownloadURL(storageRef);
-            }
-          } else {
-            // For other files, just upload
-            if (onFileUpload) {
-              setUploadProgress(prev => ({ ...prev, [file.name]: 50 }));
-              fileUrl = await onFileUpload(file);
-            } else {
-              // Use Firebase Storage directly
-              const storageRef = ref(storage, `chats/${projectId}/${Date.now()}_${file.name}`);
-              await uploadBytes(storageRef, file);
-              fileUrl = await getDownloadURL(storageRef);
-            }
-          }
-
-          // Mark as complete
-          setUploadProgress(prev => ({ ...prev, [file.name]: 100 }));
-
-          newAttachments.push({
-            id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-            name: file.name,
-            type: file.type,
-            url: fileUrl,
-            size: file.size,
-            content: fileContent
-          });
-        } catch (fileError) {
-          console.error(`Error uploading file ${file.name}:`, fileError);
-          setUploadProgress(prev => ({ ...prev, [file.name]: -1 }));
+        if (result.success && result.data) {
+          currentProgress[fileName] = 100; // Final success state
+          setUploadProgress(prev => ({ ...prev, [fileName]: 100 }));
+          Logger.log(`[ChatWindow] Upload success for ${fileName}, URL: ${result.data.url ? result.data.url.substring(0, 50) + '...' : 'N/A'}, Content: ${result.data.content ? 'Yes' : 'No'}`);
+          // Return the data structure expected by attachedFiles state
+          return result.data as AttachedFile;
+        } else {
+          throw new Error(result.error || `Failed to upload ${fileName}`);
         }
+      } catch (error) {
+        Logger.error(`[ChatWindow] Error during upload for ${fileName}:`, error);
+        currentProgress[fileName] = -1; // Mark error in progress state
+        setUploadProgress(prev => ({ ...prev, [fileName]: -1 }));
+        return null; // Indicate failure for this file
       }
+    });
 
+    // Wait for all uploads to attempt completion
+    const results = await Promise.all(uploadPromises);
+    const newAttachments = results.filter(Boolean) as AttachedFile[];
+
+    // Add successfully uploaded files to state
+    if (newAttachments.length > 0) {
       setAttachedFiles(prev => [...prev, ...newAttachments]);
-
-      // Clear progress after a delay
-      setTimeout(() => {
-        const failedFiles = Object.entries(uploadProgress)
-          .filter(([_, progress]) => progress === -1)
-          .map(([filename]) => filename);
-
-        if (failedFiles.length > 0) {
-          setUploadError(`Failed to upload: ${failedFiles.join(', ')}`);
-        }
-
-        setUploadProgress({});
-      }, 3000);
-    } catch (error) {
-      console.error('Error uploading files:', error);
-      setUploadError('Error uploading files. Please try again.');
-    } finally {
-      setIsAttaching(false);
     }
+
+    // Clear progress UI after a delay, showing errors if any
+    setTimeout(() => {
+      // Re-read the final progress state before clearing
+      const finalProgress = uploadProgress;
+      const failedFiles = Object.entries(finalProgress)
+        .filter(([_, progress]) => progress === -1)
+        .map(([filename]) => filename);
+
+      if (failedFiles.length > 0) {
+        setUploadError(`Upload failed for: ${failedFiles.join(', ')}`);
+      } else {
+        setUploadError(null); // Clear previous errors if all succeeded this time
+      }
+      setUploadProgress({}); // Clear all progress indicators
+      setIsAttaching(false);
+    }, 2500); // Delay before clearing UI
   };
+
 
   const removeAttachment = (id: string) => {
     setAttachedFiles(prev => prev.filter(file => file.id !== id));
   };
+
+  // --- FIX: SCROLLING EFFECT ---
+  useEffect(() => {
+    if (!loading && messagesEndRef.current) { // Check loading state too
+      // Use requestAnimationFrame for potentially smoother scroll after render
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      });
+    }
+  }, [chatMessages, loading]); // <-- DEPEND ON chatMessages and loading
 
   // Safe file icon getter
   const getFileIcon = (fileType: string) => {
@@ -1451,7 +1667,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         {/* Chat Content Area with drop zone */}
         {!loading && (
           <div
-            className="flex-1 relative flex flex-col"
+            className="flex-1 relative flex flex-col h-0"
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
@@ -1500,11 +1716,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
             {messages.length > 0 && (
               // Make sure this container scrolls, not the whole chat window if possible
               <div className="flex-1 overflow-y-auto p-3 space-y-4 messages-container">
-                {messages.map((msg) => {
+                {chatMessages.map((msg) => {
                   // ***** FIX: DEFINE VARIABLES HERE for each message *****
                   const isAssistant = msg.sender !== 'You' && msg.sender !== 'System';
-                  const hasSuggestions = isAssistant && msg.suggestions && msg.suggestions.length > 0 && !msg.isError;
-                  const suggestionData = hasSuggestions ? msg.suggestions[0] : null; // Get the first suggestion object
+                  const hasDiffs = isAssistant && msg.diffHunks && msg.diffHunks.length > 0 && !msg.isError;
                   // ***** END FIX *****
 
                   return (
@@ -1541,7 +1756,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
                       {/* Suggestion Button - Rendered below the message bubble */}
                       {/* Use the defined variables 'hasSuggestions' and 'suggestionData' */}
-                      {hasSuggestions && suggestionData && (
+                      {hasDiffs && (
                         <div className="mt-1.5">
                           <button
                             onClick={() => { // Directly call onShowSuggestion here
@@ -1553,14 +1768,15 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                                 return;
                               }
                               // Call the callback passed from LatexEditor
-                              if (onShowSuggestion) {
+                              if (onShowSuggestion && msg.diffHunks) {
                                 onShowSuggestion(
-                                  suggestionData, // Pass the suggestion object
-                                  msg.content,       // Pass the explanation
-                                  currentFileContent // Pass original editor content
+                                  msg.diffHunks,        // Pass the array of diff strings
+                                  msg.content,          // Pass the explanation
+                                  currentFileContent    // Pass original editor content for overlay display base
                                 );
                               } else {
-                                console.error("onShowSuggestion callback is missing!");
+                                console.error("onShowSuggestion callback or msg.diffHunks is missing!");
+
                               }
                             }}
                             className="bg-blue-600/80 text-white text-xs py-1 px-2 rounded hover:bg-blue-700 flex items-center shadow"
@@ -1753,14 +1969,16 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
                     <button
                       type="submit"
-                      disabled={(!newMessage.trim() && attachedFiles.length === 0) || !activeSessionId}
-                      className={`p-1 ${(!newMessage.trim() && attachedFiles.length === 0) || !activeSessionId
+                      // Use context activeSessionId for disabled check
+                      disabled={(!newMessage.trim() && attachedFiles.length === 0) || !chatContext.activeSessionId}
+                      className={`p-1 ${(!newMessage.trim() && attachedFiles.length === 0) || !chatContext.activeSessionId
                         ? 'text-gray-500 cursor-not-allowed'
                         : 'text-gray-300 hover:text-white'
                         }`}
                     >
                       <Send className="h-5 w-5" />
                     </button>
+                    {/* ... */}
                   </div>
                 </div>
               </form>
@@ -1770,8 +1988,5 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       </ResizablePanel>
     </div>
   );
-
-
 };
-
 export default ChatWindow;

@@ -29,7 +29,7 @@ export interface LaTeXNode {
       };
       
       // Parse document structure
-      this.parseDocumentStructure(root);
+      this.parseDocumentStructure(root); 
       
       // Add line numbers
       this.addLineNumbers(root, content);
@@ -38,8 +38,11 @@ export interface LaTeXNode {
     }
     
     private parseDocumentStructure(root: LaTeXNode): void {
-      // Parse preamble (everything before \begin{document})
+      // **FIX: Declare and calculate docStartIndex FIRST**
       const docStartIndex = this.content.indexOf('\\begin{document}');
+
+      // Parse preamble (everything before \begin{document})
+      // Now the 'if' condition can safely use docStartIndex
       if (docStartIndex !== -1) {
         const preamble: LaTeXNode = {
           type: 'preamble',
@@ -50,35 +53,76 @@ export interface LaTeXNode {
           endPos: docStartIndex + '\\begin{document}'.length
         };
         root.children.push(preamble);
-        
+
         // Parse document class
         this.parseDocumentClass(preamble);
-        
+
         // Parse packages
         this.parsePackages(preamble);
+
+         // Parse environments within the preamble content
+         this.parseEnvironments(preamble, preamble.content, preamble.startPos); // Adjusted call
+
+      } else {
+          // Handle case where \begin{document} is missing - maybe parse whole content as body?
+          console.warn("Could not find '\\begin{document}'. Parsing entire content as body/preamble.");
+          // Optionally, parse environments in the whole root content if no document structure found
+          this.parseEnvironments(root, root.content, root.startPos);
       }
-      
+
       // Parse document body
-      const bodyStartIndex = docStartIndex !== -1 ? docStartIndex + '\\begin{document}'.length : 0;
+      // bodyStartIndex calculation now correctly uses docStartIndex
+      const bodyStartIndex = docStartIndex !== -1 ? docStartIndex + '\\begin{document}'.length : (docStartIndex !== -1 ? 0 : -1); // Avoid parsing body if no \begin{document} found
       const docEndIndex = this.content.indexOf('\\end{document}');
       const bodyEndIndex = docEndIndex !== -1 ? docEndIndex : this.content.length;
-      
-      const body: LaTeXNode = {
-        type: 'body',
-        content: this.content.substring(bodyStartIndex, bodyEndIndex),
-        children: [],
-        parent: root,
-        startPos: bodyStartIndex,
-        endPos: bodyEndIndex
-      };
-      root.children.push(body);
-      
-      // Parse sections and subsections
-      this.parseSections(body);
-      
-      // Parse environments
-      this.parseEnvironments(body);
+
+      // Only create and parse body node if \begin{document} was found
+      if (bodyStartIndex !== -1 && bodyStartIndex < bodyEndIndex) {
+            const bodyNode: LaTeXNode = {
+                type: 'body',
+                content: this.content.substring(bodyStartIndex, bodyEndIndex),
+                children: [],
+                parent: root,
+                startPos: bodyStartIndex,
+                endPos: bodyEndIndex
+            };
+            root.children.push(bodyNode);
+
+            // Parse sections within the body
+            this.parseSections(bodyNode); // This will internally call parseEnvironments for each section's content
+
+            // Optionally, parse any content in the body *not* captured by sections (if parseSections doesn't handle it)
+            // This might be redundant if parseSections calls parseParagraphs correctly.
+            // this.parseEnvironments(bodyNode, bodyNode.content, bodyNode.startPos); // Check if needed based on parseSections impl.
+
+      } else if (docStartIndex !== -1) {
+           console.warn("Found '\\begin{document}' but no content found before '\\end{document}' or end of file.");
+      }
+
+
+      // Parse content *after* \end{document} if it exists? (Optional, usually ignored in LaTeX)
+      if (docEndIndex !== -1 && docEndIndex < this.content.length) {
+          const postambleContent = this.content.substring(docEndIndex + '\\end{document}'.length);
+          if (postambleContent.trim().length > 0) {
+              const postambleNode: LaTeXNode = {
+                  type: 'postamble',
+                  content: postambleContent,
+                  children: [],
+                  parent: root,
+                  startPos: docEndIndex + '\\end{document}'.length,
+                  endPos: this.content.length
+              };
+              root.children.push(postambleNode);
+              // Optionally parse environments/content here too
+              this.parseEnvironments(postambleNode, postambleNode.content, postambleNode.startPos);
+          }
+      }
+
+       // Final sort of root's direct children might be needed if preamble/body/postamble order matters strictly
+       root.children.sort((a, b) => a.startPos - b.startPos);
     }
+
+
     
     private parseDocumentClass(parent: LaTeXNode): void {
       const docClassRegex = /\\documentclass(\[.*?\])?\{(.*?)\}/;
@@ -131,105 +175,175 @@ export interface LaTeXNode {
     }
     
     private parseSections(parent: LaTeXNode): void {
-      // Regex for sections
       const sectionTypes = ['section', 'subsection', 'subsubsection', 'paragraph', 'subparagraph'];
-      const sectionStartPos: number[] = [];
-      const sectionNodes: LaTeXNode[] = [];
-      
-      // Find all section start positions
+      const sectionNodesMap: Map<number, LaTeXNode> = new Map();
+
+      // Find all section commands and store them with their start position
       for (const sectionType of sectionTypes) {
-        const regex = new RegExp(`\\\\${sectionType}\\*?\\{(.*?)\\}`, 'g');
-        let match;
-        
-        while ((match = regex.exec(parent.content)) !== null) {
-          const startPos = parent.startPos + match.index;
-          const endPos = startPos + match[0].length;
-          
-          const section: LaTeXNode = {
-            type: sectionType,
-            name: match[1],
-            content: match[0],
-            children: [],
-            parent: parent,
-            startPos,
-            endPos,
-            meta: {
-              title: match[1],
-              isStarred: match[0].includes('*')
-            }
-          };
-          
-          sectionStartPos.push(startPos);
-          sectionNodes.push(section);
-        }
-      }
-      
-      // Sort sections by start position
-      const sorted = sectionNodes
-        .map((node, index) => ({ node, startPos: sectionStartPos[index] }))
-        .sort((a, b) => a.startPos - b.startPos);
-      
-      // Calculate section content (everything up to the next section)
-      for (let i = 0; i < sorted.length; i++) {
-        const current = sorted[i].node;
-        const nextStartPos = i < sorted.length - 1 
-          ? sorted[i + 1].startPos 
-          : parent.startPos + parent.content.length;
-        
-        current.content = this.content.substring(current.startPos, nextStartPos);
-        current.endPos = nextStartPos;
-        
-        // Add section to parent
-        parent.children.push(current);
-        
-        // Process environments and paragraphs within this section
-        this.parseEnvironments(current);
-      }
-    }
-    
-    private parseEnvironments(parent: LaTeXNode, depth: number = 0): void {
-        // Add a recursion depth limit to prevent stack overflow
-        if (depth > 20) { // 20 is a reasonable maximum nesting depth for LaTeX
-          console.warn("Maximum environment nesting depth exceeded - stopping recursion");
-          return;
-        }
-      
-        // Use a non-greedy regex to prevent catastrophic backtracking
-        const envRegex = /\\begin\{([^}]*?)\}([\s\S]*?)\\end\{\1\}/g;
-        
-        let match;
-        while ((match = envRegex.exec(parent.content)) !== null) {
-          const envName = match[1];
-          const startPos = parent.startPos + match.index;
-          const endPos = startPos + match[0].length;
-          
-          const environment: LaTeXNode = {
-            type: 'environment',
-            name: envName,
-            content: match[0],
-            children: [],
-            parent: parent,
-            startPos,
-            endPos,
-            meta: {
-              innerContent: match[2]
-            }
-          };
-          
-          parent.children.push(environment);
-          
-          // Process nested environments with depth tracking
-          if (match[2].includes('\\begin{')) {
-            this.parseEnvironments(environment, depth + 1);
+          const regex = new RegExp(`\\\\${sectionType}\\*?\\{.*?\\}`, 'g'); // Simpler regex just to find start
+          let match;
+          while ((match = regex.exec(parent.content)) !== null) {
+              const startPos = parent.startPos + match.index;
+              const endPos = startPos + match[0].length; // End of the command itself
+               const titleMatch = match[0].match(/\{(.*?)\}/);
+               const title = titleMatch ? titleMatch[1] : '';
+
+              const sectionNode: LaTeXNode = {
+                  type: sectionType,
+                  name: title,
+                  content: '', // Will be filled later
+                  children: [],
+                  parent: parent,
+                  startPos: startPos, // Start of the command
+                  endPos: endPos, // Will be updated to end of section content
+                   meta: { title: title, isStarred: match[0].includes('*') }
+              };
+               if (!sectionNodesMap.has(startPos)) { // Avoid duplicates if regex overlaps
+                  sectionNodesMap.set(startPos, sectionNode);
+               }
           }
-        }      
-      
-      // Parse equations that aren't environments (e.g., $...$ or $$...$$)
-      this.parseInlineEquations(parent);
-      
-      // Parse text paragraphs between environments and commands
-      this.parseParagraphs(parent);
-    }
+      }
+
+      const sortedSections = Array.from(sectionNodesMap.entries())
+                                .sort((a, b) => a[0] - b[0])
+                                .map(entry => entry[1]);
+
+      let lastPos = parent.startPos;
+
+       // Process content *before* the first section
+       if (sortedSections.length === 0 || sortedSections[0].startPos > parent.startPos) {
+           const initialContent = this.content.substring(lastPos, sortedSections.length > 0 ? sortedSections[0].startPos : parent.endPos);
+           // Parse environments in the content before the first section command
+           this.parseEnvironments(parent, initialContent, lastPos);
+       }
+
+
+      // Process each section
+      for (let i = 0; i < sortedSections.length; i++) {
+          const currentSection = sortedSections[i];
+          const nextSectionStart = (i + 1 < sortedSections.length) ? sortedSections[i+1].startPos : parent.endPos;
+
+          // The actual content of the section starts *after* the command
+          const sectionContentStart = currentSection.endPos; // End of the command line
+          currentSection.endPos = nextSectionStart; // Update endPos to where the next section starts (or parent ends)
+          currentSection.content = this.content.substring(sectionContentStart, currentSection.endPos);
+
+          parent.children.push(currentSection);
+
+          // Recursively parse environments *within* this section's content
+          // Pass the section node, its inner content, and the content's starting offset
+          this.parseEnvironments(currentSection, currentSection.content, sectionContentStart);
+
+          lastPos = currentSection.endPos;
+      }
+
+      // Sort children (sections and any initial content nodes) by start position
+      parent.children.sort((a, b) => a.startPos - b.startPos);
+  }
+
+    
+    private parseEnvironments(parentNode: LaTeXNode, currentContent: string, contentOffset: number, depth: number = 0): void {
+      if (depth > 20) {
+          console.warn(`Maximum environment nesting depth exceeded at offset ${contentOffset} - stopping recursion`);
+          return;
+      }
+
+      // Regex to find the *next* top-level environment within the currentContent
+      // We need a way to handle nesting properly. Regex alone is very hard for this.
+      // Let's try a different approach: Find all top-level environments first.
+
+      const envRegex = /\\begin\{([^}]*?)\}/g; // Find start tags
+      let match;
+      let currentPos = 0;
+
+      while ((match = envRegex.exec(currentContent)) !== null) {
+          // Check if this match is inside an already processed range (skip if so)
+           if (match.index < currentPos) {
+               continue;
+           }
+
+          const envName = match[1];
+          const beginTag = match[0];
+          const beginIndex = match.index;
+
+          // Find the corresponding \end tag, respecting nesting
+          const endTag = `\\end{${envName}}`;
+          let nestingLevel = 1;
+          let searchPos = beginIndex + beginTag.length;
+          let endIndex = -1;
+
+          while (searchPos < currentContent.length) {
+              const nextBegin = currentContent.indexOf(`\\begin{${envName}}`, searchPos);
+              const nextEnd = currentContent.indexOf(endTag, searchPos);
+
+              if (nextEnd === -1) {
+                  // No matching end tag found in the remaining content - malformed LaTeX?
+                  console.warn(`No matching '${endTag}' found for environment starting at offset ${contentOffset + beginIndex}`);
+                  // Move past this begin tag to avoid infinite loop if regex re-matches
+                  currentPos = beginIndex + beginTag.length;
+                  break; // Stop searching for this specific environment
+              }
+
+              if (nextBegin !== -1 && nextBegin < nextEnd) {
+                  // Found a nested begin tag first
+                  nestingLevel++;
+                  searchPos = nextBegin + beginTag.length;
+              } else {
+                  // Found an end tag
+                  nestingLevel--;
+                  if (nestingLevel === 0) {
+                      // This is the matching end tag for our starting begin tag
+                      endIndex = nextEnd;
+                      break;
+                  }
+                  // Continue searching after this end tag
+                  searchPos = nextEnd + endTag.length;
+              }
+          }
+
+
+          if (endIndex !== -1) {
+              // Found a complete environment
+              const envStartPos = contentOffset + beginIndex;
+              const envEndPos = contentOffset + endIndex + endTag.length;
+              const fullEnvContent = this.content.substring(envStartPos, envEndPos); // Get from original full content
+              const innerEnvContent = this.content.substring(envStartPos + beginTag.length, contentOffset + endIndex);
+
+              const environmentNode: LaTeXNode = {
+                  type: 'environment',
+                  name: envName,
+                  content: fullEnvContent, // The full \begin{}...\end{} block
+                  children: [],
+                  parent: parentNode,
+                  startPos: envStartPos,
+                  endPos: envEndPos,
+                  meta: {
+                      innerContent: innerEnvContent // Store just the inner part
+                  }
+              };
+
+              parentNode.children.push(environmentNode);
+
+              // Recursively parse the *inner* content of this environment
+              // Pass the inner content string, its offset relative to the start of the document, and increment depth
+              this.parseEnvironments(environmentNode, innerEnvContent, envStartPos + beginTag.length, depth + 1);
+
+              // Update currentPos to continue searching after this environment
+              currentPos = endIndex + endTag.length;
+
+          }
+          // If endIndex remained -1, the loop correctly broke, and currentPos was updated.
+      }
+
+      // After finding all environments, parse remaining text as paragraphs etc.
+      // This might need further refinement depending on how you handle text nodes.
+      // For now, the focus is fixing the environment recursion.
+       this.parseInlineEquations(parentNode); // Maybe parse equations within text not inside envs?
+       this.parseParagraphs(parentNode); // Parse remaining text nodes
+
+
+  }
+
     
     private parseInlineEquations(parent: LaTeXNode): void {
       // Single $ and double $$ equations

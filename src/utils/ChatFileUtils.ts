@@ -6,90 +6,153 @@ import {
   addDoc,
   getDoc,
   updateDoc,
-  serverTimestamp
+  serverTimestamp,
+  query, // Added query import
+  where, // Added where import
+  getDocs // Added getDocs import
 } from 'firebase/firestore';
 import { db, storage } from '@/lib/firebase';
+
+// Logger replacement using console
+const Logger = console;
 
 /**
  * Interface for file handling result
  */
 interface FileHandlingResult {
   success: boolean;
-  data?: any;
-  url?: string;
-  content?: string;
+  data?: { // Consistent data structure
+    id: string; // Temporary ID or reference
+    name: string;
+    type: string;
+    size: number;
+    url: string; // This will be the HTTPS URL for images/binaries or relevant identifier
+    content?: string | null; // Text content or null for non-text
+    uploadedAt: string; // ISO string timestamp
+    // Add other potential fields from Firestore if needed later
+    fileType?: string;
+    parentId?: string | null;
+  };
+  url?: string; // Keep for potential direct use or backward compatibility
+  content?: string | null; // Allow null
   error?: string;
 }
 
 /**
- * Utility class for managing file operations in the chat interface
+ * Utility class for managing file operations in the chat interface and project
  */
 export class ChatFileUtils {
   /**
-   * Upload a file for chat attachment
+   * Upload a file for chat attachment.
+   * - Images/Binaries go to Firebase Storage, returning HTTPS downloadURL.
+   * - Text files have content read. Storage upload for text is optional.
    * @param file The file to upload
    * @param projectId Current project ID
    * @param userId User ID
-   * @returns Promise with upload result
+   * @returns Promise with upload result including data object
    */
   static async uploadChatFile(
     file: File,
     projectId: string,
     userId: string
   ): Promise<FileHandlingResult> {
+    const tempId = `chat-file-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const timestamp = Date.now();
+    // Sanitize filename for storage path, ensuring uniqueness
+    const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const storagePath = `chats/${projectId}/${userId}/${timestamp}_${safeFileName}`;
+    const storageRef = ref(storage, storagePath);
+
+    Logger.log(`[ChatFileUtils] Uploading ${file.name} (${file.type}) to ${storagePath}`);
+
     try {
-      // Create a reference to the storage location
-      const storageRef = ref(storage, `chats/${projectId}/${Date.now()}_${file.name}`);
-      
-      // Upload the file
-      await uploadBytes(storageRef, file);
-      
-      // Get the download URL
-      const downloadURL = await getDownloadURL(storageRef);
-      
-      // Determine if it's a text file
-      const isTextFile = 
-        file.type === 'text/plain' || 
-        file.name.endsWith('.tex') || 
-        file.name.endsWith('.bib') || 
-        file.name.endsWith('.md') || 
-        file.name.endsWith('.txt');
-      
-      // For text files, read content
-      let content = '';
+      // Determine file type for handling
+      // More robust check for common text/code file extensions
+      const isTextFile =
+        file.type.startsWith('text/') ||
+        /\.(txt|tex|bib|md|json|csv|xml|html|css|js|ts|py|java|c|cpp|h|hpp|sh|cls|sty|log|r|sql|yaml|toml)$/i.test(file.name);
+      const isImage = file.type.startsWith('image/');
+
+      let fileContent: string | null = null;
+      let downloadURL: string = ''; // Initialize downloadURL
+
+      // --- Handle TEXT Files ---
       if (isTextFile) {
-        content = await this.readFileAsText(file);
+        Logger.log(`[ChatFileUtils] Reading text content for ${file.name}`);
+        fileContent = await this.readFileAsText(file);
+        // We won't upload text files to storage for chat attachments by default
+        downloadURL = ''; // No storage URL needed for chat message itself
+        Logger.log(`[ChatFileUtils] Text content read for ${file.name}. Size: ${fileContent?.length ?? 0}`);
+
+      // --- Handle IMAGE and OTHER BINARY Files ---
+      } else {
+        Logger.log(`[ChatFileUtils] Uploading binary/image file ${file.name} to storage...`);
+        // Upload to Firebase Storage
+        const uploadResult = await uploadBytes(storageRef, file);
+        Logger.log(`[ChatFileUtils] Upload complete for ${file.name}. Metadata:`, uploadResult.metadata);
+        Logger.log(`[ChatFileUtils] Getting download URL...`);
+        // Get the HTTPS download URL (this includes access tokens)
+        downloadURL = await getDownloadURL(storageRef);
+        Logger.log(`[ChatFileUtils] Got download URL for ${file.name}: ${downloadURL.substring(0, 70)}...`);
+        fileContent = null; // No text content for binaries/images
       }
-      
-      return {
-        success: true,
-        url: downloadURL,
-        content: content,
-        data: {
+
+      // --- Construct Success Response ---
+      const resultData = {
+          id: tempId, // Use temporary ID
           name: file.name,
           type: file.type,
           size: file.size,
-          url: downloadURL,
-          content: isTextFile ? content : null,
+          url: downloadURL, // HTTPS URL (for images/binaries) or empty string (for text)
+          content: fileContent, // Text content or null
           uploadedAt: new Date().toISOString()
-        }
       };
-    } catch (error) {
-      console.error('Error uploading file:', error);
+
       return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error uploading file'
+        success: true,
+        data: resultData,
+        // Keep top-level url/content for simple access if needed
+        url: downloadURL,
+        content: fileContent ?? undefined, // Return undefined if null
       };
+
+    } catch (error) {
+      Logger.error(`[ChatFileUtils] Error uploading file ${file.name}:`, error);
+      // Attempt to provide more specific error info
+      let errorMessage = 'Unknown error uploading file';
+      if (error instanceof Error) {
+          errorMessage = error.message;
+          if ((error as any).code) { // Firebase storage errors often have codes
+              switch ((error as any).code) {
+                  case 'storage/unauthorized':
+                      errorMessage = 'Permission denied. Check Firebase Storage security rules.';
+                      break;
+                  case 'storage/canceled':
+                      errorMessage = 'Upload cancelled.';
+                      break;
+                  case 'storage/object-not-found':
+                  case 'storage/bucket-not-found':
+                      errorMessage = 'Storage path error. Check configuration.';
+                      break;
+                  // Add more specific Firebase error codes if needed
+                  default:
+                      errorMessage = `Storage Error (${(error as any).code}): ${error.message}`;
+                      break;
+              }
+          }
+      }
+      return { success: false, error: errorMessage };
     }
   }
-  
+
   /**
-   * Import a file to the project file tree
+   * Import a file to the project file tree (projectFiles collection)
+   * Handles text, images (as dataURL in Firestore for small ones), and binaries (uploading to Storage)
    * @param file The file to import
    * @param projectId Current project ID
    * @param userId User ID
    * @param parentId Optional parent folder ID
-   * @returns Promise with the created file ID
+   * @returns Promise with the created file ID and other data
    */
   static async importFileToProject(
     file: File,
@@ -97,162 +160,212 @@ export class ChatFileUtils {
     userId: string,
     parentId: string | null = null
   ): Promise<FileHandlingResult> {
+    const timestamp = Date.now();
+    const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    Logger.log(`[ChatFileUtils] Importing ${file.name} to project ${projectId}`);
+
     try {
-      // Read file content
-      let content = '';
-      const isTextFile = 
-        file.type === 'text/plain' || 
-        file.name.endsWith('.tex') || 
-        file.name.endsWith('.bib') || 
-        file.name.endsWith('.md') || 
-        file.name.endsWith('.txt');
-        
+      let content: string | null = null; // Use null for non-text content initially
+      const isTextFile =
+        file.type.startsWith('text/') ||
+        /\.(txt|tex|bib|md|json|csv|xml|html|css|js|ts|py|java|c|cpp|h|hpp|sh|cls|sty|log|r|sql|yaml|toml)$/i.test(file.name);
       const isImage = file.type.startsWith('image/');
-        
-      if (isTextFile) {
-        content = await this.readFileAsText(file);
-      } else if (isImage) {
-        content = await this.readFileAsDataURL(file);
-      }
-      
-      // Create file record in Firestore
+      const extension = file.name.split('.').pop()?.toLowerCase() || '';
+
       const fileData: Record<string, any> = {
-        _name_: file.name,
-        name: file.name,
+        _name_: file.name, // Use _name_ consistently
+        name: file.name,   // Keep 'name' for compatibility if needed
         type: 'file',
         projectId,
         parentId,
         ownerId: userId,
-        content: content,
         createdAt: serverTimestamp(),
-        lastModified: serverTimestamp()
+        lastModified: serverTimestamp(), // Use lastModified
+        size: file.size,
+        extension: extension,
+        // 'order' field needs to be calculated if used (e.g., find max order in parent + 1)
+        // order: await this.calculateNextOrder(projectId, parentId), // Example call
       };
-      
-      // Add file extension
-      const extension = file.name.split('.').pop()?.toLowerCase();
-      if (extension) {
-        fileData.extension = extension;
-      }
-      
-      // For images and binary files, store additional data
-      if (isImage) {
-        fileData.fileType = 'image';
-      } else if (!isTextFile) {
-        fileData.fileType = 'binary';
-        
-        // Upload binary file to storage
-        const storageRef = ref(storage, `projects/${projectId}/files/${file.name}`);
+
+      let downloadURL: string | null = null; // For binary files stored in Storage
+
+      if (isTextFile) {
+        fileData.fileType = 'text';
+        content = await this.readFileAsText(file);
+        fileData.content = content; // Store text content directly
+        Logger.log(`[ChatFileUtils] Storing text file ${file.name} content in Firestore.`);
+      } else if (isImage && file.size < 1000000) { // Store small images as dataURL (e.g., < 1MB)
+        fileData.fileType = 'image_data_url'; // More specific type
+        content = await this.readFileAsDataURL(file);
+        fileData.content = content; // Store dataURL in content field
+        Logger.log(`[ChatFileUtils] Storing small image ${file.name} as dataURL in Firestore.`);
+      } else { // Larger images or other binary files go to Storage
+        fileData.fileType = isImage ? 'image_storage' : 'binary_storage'; // More specific type
+        fileData.content = null; // Don't store large content in Firestore doc
+
+        const storagePath = `projects/${projectId}/files/${timestamp}_${safeFileName}`;
+        const storageRef = ref(storage, storagePath);
+        Logger.log(`[ChatFileUtils] Uploading large image/binary ${file.name} to Storage: ${storagePath}`);
         await uploadBytes(storageRef, file);
-        fileData.downloadURL = await getDownloadURL(storageRef);
+        downloadURL = await getDownloadURL(storageRef);
+        fileData.downloadURL = downloadURL; // Store the Storage URL
+        Logger.log(`[ChatFileUtils] Uploaded ${file.name} to Storage. URL: ${downloadURL.substring(0,70)}...`);
       }
-      
-      // Add to Firestore
+
+      // Add the document to Firestore 'projectFiles' collection
       const docRef = await addDoc(collection(db, "projectFiles"), fileData);
-      
+      Logger.log(`[ChatFileUtils] File ${file.name} added to Firestore projectFiles collection, ID: ${docRef.id}`);
+
       return {
         success: true,
         data: {
           id: docRef.id,
           name: file.name,
-          type: 'file'
+          type: 'file',
+          size: file.size,
+          url: downloadURL || (content && content.startsWith('data:image') ? 'data_url_in_firestore' : ''), // Indicate source
+          content: content, // Return content if it was read (text/small image)
+          uploadedAt: new Date().toISOString(),
+          fileType: fileData.fileType,
+          parentId: parentId
         }
       };
     } catch (error) {
-      console.error('Error importing file to project:', error);
+      Logger.error(`[ChatFileUtils] Error importing file ${file.name} to project:`, error);
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error importing file'
       };
     }
   }
-  
+
   /**
-   * Get file content from the project files
+   * Get file content and metadata from the project files
+   * Checks both 'projectFiles' and 'project_files' collections.
    * @param fileId The file ID to fetch
-   * @returns Promise with the file content
+   * @returns Promise with the file content and metadata result
    */
   static async getFileContent(fileId: string): Promise<FileHandlingResult> {
+    Logger.log(`[ChatFileUtils] Attempting to get content for fileId: ${fileId}`);
     try {
-      // Try in projectFiles first
-      const fileRef = doc(db, "projectFiles", fileId);
-      let fileDoc = await getDoc(fileRef);
-      
-      // If not found, try in project_files
-      if (!fileDoc.exists()) {
-        const altFileRef = doc(db, "project_files", fileId);
-        fileDoc = await getDoc(altFileRef);
+      let fileData: any = null;
+      let fileDoc: any = null; // Firestore DocumentSnapshot
+      let found = false;
+      let collectionName = '';
+
+      // Try common collection names
+      const collectionsToTry = ["projectFiles", "project_files"];
+      for (const collName of collectionsToTry) {
+        try {
+            const fileRef = doc(db, collName, fileId);
+            fileDoc = await getDoc(fileRef);
+            if (fileDoc.exists()) {
+                fileData = fileDoc.data();
+                // Check if marked as deleted
+                if (fileData.deleted === true) {
+                    Logger.warn(`[ChatFileUtils] File ${fileId} found in ${collName} but is marked as deleted.`);
+                    return { success: false, error: 'File has been deleted' };
+                }
+                Logger.log(`[ChatFileUtils] Found file ${fileId} in collection '${collName}'.`);
+                found = true;
+                collectionName = collName;
+                break; // Stop searching once found
+            }
+        } catch (innerError) {
+            Logger.warn(`[ChatFileUtils] Error checking collection '${collName}' for file ${fileId}:`, innerError);
+        }
       }
-      
-      // If found, return the content
-      if (fileDoc.exists()) {
-        const data = fileDoc.data();
+
+      // If found in either collection and not deleted
+      if (found && fileData) {
+        const name = fileData._name_ || fileData.name || 'Untitled';
+        const type = fileData.type || 'file';
+        const fileType = fileData.fileType || (name.endsWith('.tex') ? 'text' : 'binary');
+        const url = fileData.downloadURL || fileData.url || '';
+        let content = fileData.content || '';
+
+        // Handle potential data URLs stored in content field
+        if (fileType === 'image_data_url' && content.startsWith('data:image')) {
+            // Keep content as dataURL
+        }
+        // If it's stored in storage, content field might be empty/null in firestore doc
+        else if (fileType === 'image_storage' || fileType === 'binary_storage') {
+            content = ''; // Don't return potentially empty/null content field if storage URL exists
+        }
+
         return {
           success: true,
-          content: data.content || '',
+          content: content, // Text content, dataURL (small images), or empty string
           data: {
             id: fileDoc.id,
-            name: data._name_ || data.name || 'Untitled',
-            type: data.type || 'file',
-            fileType: data.fileType || 'text'
-          }
+            name: name,
+            type: type,
+            size: fileData.size || 0,
+            url: url, // Storage URL if available
+            content: content, // Include here too
+            uploadedAt: fileData.createdAt?.toDate?.().toISOString() || new Date().toISOString(),
+            fileType: fileType,
+            parentId: fileData.parentId || null
+          },
+          url: url
         };
       }
-      
-      return {
-        success: false,
-        error: 'File not found'
-      };
+
+      // If not found in any searched collection
+      Logger.warn(`[ChatFileUtils] File ${fileId} not found in any checked collection.`);
+      return { success: false, error: 'File not found' };
+
     } catch (error) {
-      console.error('Error getting file content:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error getting file content'
-      };
+      Logger.error(`[ChatFileUtils] Error getting file content for ${fileId}:`, error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error getting file content' };
     }
   }
-  
+
   /**
-   * Read file as text
+   * Read file as text (static helper)
    * @param file The file to read
    * @returns Promise with the file text content
    */
   static readFileAsText(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
+      if (!file) return reject(new Error("File object is null or undefined."));
       const reader = new FileReader();
       reader.onload = () => {
-        if (reader.result) {
-          resolve(reader.result as string);
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
         } else {
-          reject(new Error("Failed to read file"));
+          // Handle ArrayBuffer case if needed, though readAsText should yield string
+          resolve(new TextDecoder().decode(reader.result as ArrayBuffer));
         }
       };
-      reader.onerror = (error) => reject(error);
-      reader.readAsText(file);
+      reader.onerror = (error) => reject(new Error(`Failed to read file ${file.name} as text: ${reader.error?.message || error}`));
+      reader.readAsText(file); // Ensure this is called
     });
   }
-  
+
   /**
-   * Read file as data URL
+   * Read file as data URL (static helper)
    * @param file The file to read
    * @returns Promise with the file as data URL
    */
   static readFileAsDataURL(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
+      if (!file) return reject(new Error("File object is null or undefined."));
       const reader = new FileReader();
       reader.onload = () => {
-        if (reader.result) {
-          resolve(reader.result as string);
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
         } else {
-          reject(new Error("Failed to read file"));
+          reject(new Error(`Failed to read file ${file.name} as data URL: Invalid result type.`));
         }
       };
-      reader.onerror = (error) => reject(error);
-      reader.readAsDataURL(file);
+      reader.onerror = (error) => reject(new Error(`Failed to read file ${file.name} as data URL: ${reader.error?.message || error}`));
+      reader.readAsDataURL(file); // Ensure this is called
     });
   }
-  
+
   /**
-   * Create a file mention string for chat messages
+   * Create a file mention string for chat messages (static helper)
    * @param fileName The file name
    * @param fileId The file ID
    * @returns Formatted mention string
@@ -260,9 +373,9 @@ export class ChatFileUtils {
   static createFileMention(fileName: string, fileId: string): string {
     return `@[${fileName}](${fileId})`;
   }
-  
+
   /**
-   * Update chat message with file suggestions
+   * Update chat message with file suggestions (Placeholder - implement actual logic if needed)
    * @param messageId The message ID to update
    * @param sessionId The chat session ID
    * @param suggestion The suggestion content
@@ -276,20 +389,44 @@ export class ChatFileUtils {
     range?: {start: number, end: number},
     fileId?: string
   ): Promise<void> {
-    try {
-      const messageRef = doc(db, "chatSessions", sessionId, "messages", messageId);
-      
-      await updateDoc(messageRef, {
-        suggestion: {
-          text: suggestion,
-          range: range || null,
-          fileId: fileId || null
-        },
-        lastModified: serverTimestamp()
-      });
-    } catch (error) {
-      console.error('Error updating message with suggestion:', error);
-      throw error;
-    }
+    Logger.warn("[ChatFileUtils] updateMessageWithSuggestion called - Ensure implementation if required.");
+    // Example implementation (adjust based on your needs):
+    // try {
+    //   const messageRef = doc(db, "chatSessions", sessionId, "messages", messageId);
+    //   await updateDoc(messageRef, {
+    //     'suggestionData': { // Use a structured field
+    //       text: suggestion,
+    //       range: range || null,
+    //       fileId: fileId || null,
+    //       applied: false // Track application status
+    //     },
+    //     lastModified: serverTimestamp()
+    //   });
+    // } catch (error) {
+    //   console.error('Error updating message with suggestion:', error);
+    //   throw error;
+    // }
   }
+
+  // --- Optional: Helper to calculate next order for imported files ---
+  // static async calculateNextOrder(projectId: string, parentId: string | null): Promise<number> {
+  //     try {
+  //         const q = query(
+  //             collection(db, "projectFiles"),
+  //             where("projectId", "==", projectId),
+  //             where("parentId", "==", parentId),
+  //             orderBy("order", "desc"),
+  //             limit(1)
+  //         );
+  //         const snapshot = await getDocs(q);
+  //         if (!snapshot.empty) {
+  //             const lastItem = snapshot.docs[0].data();
+  //             return (lastItem.order || 0) + 1;
+  //         }
+  //         return 0; // First item in this parent
+  //     } catch (error) {
+  //         Logger.error("Error calculating next order:", error);
+  //         return 0; // Default to 0 on error
+  //     }
+  // }
 }

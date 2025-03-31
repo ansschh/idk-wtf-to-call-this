@@ -1,57 +1,333 @@
 // utils/editorUtils.ts
 import { EditorView, ViewUpdate } from '@codemirror/view';
-import { LaTeXNode, LaTeXTreeProcessor } from './LaTeXTreeProcessor';
-import { EditIntentAnalyzer } from './EditIntentAnalyzer';
-import { DocumentContextManager } from './DocumentContextManager';
+import React from 'react';
+import { applyPatch, parsePatch, createPatch } from 'diff'; // Import from 'diff' library
+import { LaTeXNode, LaTeXTreeProcessor } from './LaTeXTreeProcessor'; // If needed for other utils
+import { EditIntentAnalyzer } from './EditIntentAnalyzer'; // If needed for other utils
+import { DocumentContextManager } from './DocumentContextManager'; // If needed for other utils
+const Logger = console;
+
 
 /**
- * Safely applies changes to the CodeMirror editor
- * This function handles different ways to update editor content based on what API is available
+ * Applies multiple unified diff patch strings sequentially to the editor's current content.
+ * Stops and returns error if any patch fails.
+ * Applies the final result in a single transaction if all patches succeed.
  */
-/**
- * A robust utility for safely applying editor changes with multiple strategies
- * This can handle various edit scenarios including insertions, deletions, and replacements
- */
-// Enhanced version of safelyApplyEditorChanges from editorUtils.ts
 
-// utils/editorUtils.ts (append or update with the following function)
+// Interface for search/replace blocks
+interface SearchReplaceBlock {
+  search: string;
+  replace: string;
+  explanation?: string; // Optional explanation if provided by LLM
+}
+
+
+
+export const applyMultipleUnifiedDiffPatches = (
+  editorRef: React.RefObject<{ view?: EditorView } | null>,
+  hunks: string[]
+): { success: boolean; finalContent?: string; error?: string; failedHunkIndex?: number } => {
+  if (!editorRef?.current?.view) {
+    console.error("Editor view reference is not available for patching.");
+    return { success: false, error: "Editor view not available" };
+  }
+
+  const view = editorRef.current.view;
+  const initialContent = view.state.doc.toString(); // Store initial content
+  let currentContent = initialContent; // Content to be modified step-by-step
+
+  console.log(`Starting patch application. Initial length: ${initialContent.length}, Hunks: ${hunks.length}`);
+
+  try {
+    if (!Array.isArray(hunks)) {
+         throw new Error("Invalid hunks format: Expected an array of strings.");
+    }
+
+    for (let i = 0; i < hunks.length; i++) {
+      const hunk = hunks[i];
+       if (typeof hunk !== 'string') {
+           console.warn(`Skipping invalid hunk at index ${i}. Expected string.`);
+           continue; // Skip non-string items
+       }
+
+      console.log(`Attempting to apply Hunk ${i + 1}/${hunks.length}`);
+
+      // Try applying cleanly first
+      let result = applyPatch(currentContent, hunk);
+
+      if (result === false) {
+        // Try fuzzy patching if clean apply fails
+         console.warn(`Hunk ${i + 1}: Clean patch failed, trying fuzzy patching.`);
+         try {
+             const parsed = parsePatch(hunk);
+             // Attempt to apply each part of the parsed patch using fuzziness
+             let fuzzyResult: string | false = currentContent; // Start with content before this hunk
+             let hunkPartiallyApplied = true;
+             for (const patchPart of parsed) {
+                 const partResult = applyPatch(fuzzyResult, patchPart, { fuzzFactor: 2 }); // Adjust fuzzFactor if needed
+                 if (partResult === false) {
+                     hunkPartiallyApplied = false;
+                      console.error(`Fuzzy patching failed for part of hunk ${i + 1}:`, patchPart);
+                     break; // Stop applying parts of this hunk if one fails
+                 }
+                 fuzzyResult = partResult; // Update content for next part
+             }
+             result = hunkPartiallyApplied ? fuzzyResult : false; // Use fuzzy result only if all parts applied
+         } catch (parseError) {
+              console.error(`Error parsing hunk ${i+1} for fuzzy patching:`, parseError);
+              result = false; // Treat parse error as patch failure
+         }
+      }
+
+      if (result === false) {
+        // Patch failed even with fuzziness
+        const errorMsg = `Patch application failed for Hunk ${i + 1}. Changes up to this point were not applied to the editor.`;
+        console.error(errorMsg, "Failed Hunk Content (first 200 chars):", hunk.substring(0, 200));
+        // Maybe log currentContent vs hunk context lines here for debugging
+        return { success: false, error: errorMsg, failedHunkIndex: i };
+      }
+
+      // Update the content for the next iteration
+      const contentBeforeHunk = currentContent;
+      currentContent = result;
+      console.log(`Hunk ${i + 1} applied successfully. Content length changed from ${contentBeforeHunk.length} to ${currentContent.length}.`);
+    }
+
+    // --- All hunks applied successfully in memory ---
+
+    // Check if the final content is actually different from the initial editor state
+    if (currentContent === initialContent) {
+      console.warn("All patches applied, but resulted in no change to the initial editor content.");
+      return { success: true, finalContent: currentContent }; // Success, but no editor update needed
+    }
+
+    // Apply the single, final result to the editor instance
+    console.log(`Applying final combined changes to editor. Final length: ${currentContent.length}`);
+    view.dispatch({
+      changes: { from: 0, to: initialContent.length, insert: currentContent }
+    });
+
+    console.log("All unified diff patches applied successfully to editor.");
+    return { success: true, finalContent: currentContent };
+
+  } catch (error) {
+    console.error("Error during sequential patch application process:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error during patch application process",
+      failedHunkIndex: -1 // Indicates error wasn't specific to a hunk index during the loop logic itself
+    };
+  }
+};
+
+
 /**
- * Applies a full content change to the editor
+ * Applies search-and-replace blocks sequentially to the editor content.
+ * Uses simple string replacement and stops if a search block is not found or not unique.
+ */
+export const applySearchReplaceBlocks = (
+  editorRef: React.RefObject<{ view?: EditorView } | null>,
+  blocks: SearchReplaceBlock[]
+): { success: boolean; finalContent?: string; error?: string; failedBlockIndex?: number } => {
+  if (!editorRef?.current?.view) {
+      Logger.error("Editor view reference is not available for search/replace.");
+      return { success: false, error: "Editor view not available" };
+  }
+
+  const view = editorRef.current.view;
+  const initialContent = view.state.doc.toString();
+  let currentContent = initialContent; // Start with current editor content
+  const changes = []; // Collect changes for a single transaction
+
+  Logger.log(`Starting search/replace application. Blocks: ${blocks.length}`);
+
+  try {
+       if (!Array.isArray(blocks)) {
+           throw new Error("Invalid search/replace blocks format: Expected an array.");
+       }
+
+      for (let i = 0; i < blocks.length; i++) {
+          const block = blocks[i];
+           if (!block || typeof block.search !== 'string' || typeof block.replace !== 'string') {
+               Logger.warn(`Skipping invalid block at index ${i}.`);
+               continue;
+           }
+
+          const searchStr = block.search;
+          const replaceStr = block.replace;
+
+          Logger.log(`Applying Block ${i + 1}/${blocks.length}: Searching for:\n${searchStr.substring(0,100)}...`);
+
+          // --- Simple String Search (Find first occurrence) ---
+          // Note: This is less robust than aider's fuzzy/contextual search.
+          // It relies heavily on the LLM providing enough UNIQUE context in the search block.
+          const startIndex = currentContent.indexOf(searchStr);
+
+          if (startIndex === -1) {
+              const errorMsg = `Search/Replace failed at Block ${i + 1}: The exact 'search' text was not found in the current document content. The content might have changed or the AI provided incorrect context.`;
+              Logger.error(errorMsg, "Search Text:", searchStr.substring(0, 200));
+              return { success: false, error: errorMsg, failedBlockIndex: i };
+          }
+
+          // Check for uniqueness (simple check for now)
+          const secondIndex = currentContent.indexOf(searchStr, startIndex + 1);
+          if (secondIndex !== -1) {
+              const errorMsg = `Search/Replace failed at Block ${i + 1}: The 'search' text was found multiple times. More context is needed from the AI.`;
+               Logger.error(errorMsg, "Search Text:", searchStr.substring(0, 200));
+              return { success: false, error: errorMsg, failedBlockIndex: i };
+          }
+          // --- End Search ---
+
+          // Calculate change for CodeMirror transaction
+          const endIndex = startIndex + searchStr.length;
+          changes.push({ from: startIndex, to: endIndex, insert: replaceStr });
+
+          // Update currentContent *in memory* for the next iteration's search
+          currentContent = currentContent.substring(0, startIndex) + replaceStr + currentContent.substring(endIndex);
+          Logger.log(`Block ${i + 1} applied in memory. New length: ${currentContent.length}`);
+      }
+
+      // --- All blocks processed successfully in memory ---
+
+      if (changes.length === 0) {
+           Logger.warn("Search/Replace finished, but no changes were applicable or needed.");
+           return { success: true, finalContent: initialContent }; // No changes made
+      }
+
+      // Apply all collected changes in a single transaction to the editor
+      Logger.log(`Applying ${changes.length} search/replace changes to editor...`);
+      view.dispatch({ changes: changes });
+
+      // Verify final content matches in-memory version (optional sanity check)
+      const editorFinalContent = view.state.doc.toString();
+      if (editorFinalContent !== currentContent) {
+           Logger.error("Editor content mismatch after applying search/replace transaction!");
+           // Fallback: Force editor state to match calculated state
+           view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: currentContent } });
+      }
+
+
+      Logger.log("Search/Replace blocks applied successfully to editor.");
+      return { success: true, finalContent: currentContent };
+
+  } catch (error) {
+      Logger.error("Error during search/replace application process:", error);
+      return {
+          success: false,
+          error: error instanceof Error ? error.message : "Unknown error during search/replace",
+          failedBlockIndex: -1 // Indicates general process error
+      };
+  }
+};
+
+/**
+ * Applies a full content change to the editor instance.
+ * Useful as a fallback or for specific actions.
  */
 export const applyFullContentChange = (
-  editorRef: React.RefObject<any>,
+  editorRef: React.RefObject<{ view?: EditorView } | null>,
   newContent: string
 ): boolean => {
-  if (!editorRef.current) {
+  if (!editorRef?.current) {
     console.error("Editor reference is not available");
     return false;
   }
 
   try {
-    const editor = editorRef.current;
-    let currentContent = '';
-
-    if (editor.view && editor.view.state) {
-      currentContent = editor.view.state.doc.toString();
-      // For CodeMirror 6: create and dispatch a transaction that replaces the entire document.
-      const transaction = editor.view.state.update({
-        changes: { from: 0, to: currentContent.length, insert: newContent }
+    // Check if it's a CodeMirror 6 view instance
+    const view = editorRef.current.view;
+    if (view && view instanceof EditorView) {
+      const currentContentLength = view.state.doc.length;
+      view.dispatch({
+        changes: { from: 0, to: currentContentLength, insert: newContent }
       });
-      editor.view.dispatch(transaction);
+      console.log("Applied full content using CodeMirror 6 transaction.");
       return true;
-    } else if (typeof editor.getValue === 'function') {
-      currentContent = editor.getValue();
-      editor.setValue(newContent);
-      return true;
-    } else {
-      console.error("Editor content retrieval method not found");
-      return false;
     }
+
+    // Fallback for other editor types (e.g., CodeMirror 5 via setValue)
+    if (typeof (editorRef.current as any).setValue === 'function') {
+      (editorRef.current as any).setValue(newContent);
+      console.log("Applied full content using setValue.");
+      return true;
+    }
+
+    console.error("No suitable method found (view.dispatch or setValue) to apply full content change.");
+    return false;
+
   } catch (error) {
     console.error("Error applying full content change:", error);
     return false;
   }
 };
+
+
+export const applyUnifiedDiffPatch = (
+  editorRef: React.RefObject<{ view?: EditorView } | null>,
+  patchString: string
+): { success: boolean; newContent?: string; error?: string } => {
+  if (!editorRef?.current?.view) {
+    console.error("Editor view reference is not available for patching.");
+    return { success: false, error: "Editor view not available" };
+  }
+
+  const view = editorRef.current.view;
+  const currentContent = view.state.doc.toString();
+
+  try {
+    // Apply the patch using the 'diff' library
+    // The library might return false or throw an error on failure
+    const patchedContent = applyPatch(currentContent, patchString);
+
+    if (patchedContent === false) {
+        // applyPatch returns false if the patch doesn't apply cleanly
+         console.warn("Patch did not apply cleanly. Trying fuzzy patching.");
+         // Attempt fuzzy patching (might produce unexpected results)
+         const parsedPatches = parsePatch(patchString);
+         let fuzzyPatchedContent = currentContent;
+         let fuzzyApplied = true;
+         for (const patch of parsedPatches) {
+             const result = applyPatch(fuzzyPatchedContent, patch, { fuzzFactor: 2 }); // Adjust fuzzFactor as needed
+             if (result === false) {
+                 fuzzyApplied = false;
+                 console.error("Fuzzy patching also failed for a hunk:", patch);
+                 break; // Stop if any hunk fails even with fuzziness
+             }
+             fuzzyPatchedContent = result;
+         }
+
+         if (!fuzzyApplied) {
+             return { success: false, error: "Patch application failed, even with fuzziness." };
+         }
+         patchedContent = fuzzyPatchedContent; // Use fuzzy result if it worked
+    }
+
+
+    // Check if the content actually changed
+    if (patchedContent === currentContent) {
+        console.warn("Patch applied, but resulted in no change to the content.");
+        // Optionally treat this as success or failure depending on desired behavior
+         return { success: true, newContent: patchedContent }; // Treat as success, but no state update needed later
+    }
+
+    // Apply the successful patch result to the editor
+    view.dispatch({
+      changes: { from: 0, to: currentContent.length, insert: patchedContent }
+    });
+
+    console.log("Unified diff patch applied successfully.");
+    return { success: true, newContent: patchedContent };
+
+  } catch (error) {
+    console.error("Error applying unified diff patch:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error during patch application"
+    };
+  }
+};
+
+
 
 
 /**
@@ -582,4 +858,97 @@ export const getEditorInstance = (ref: React.RefObject<any>): any => {
 
   // Already a direct editor reference
   return ref.current;
+};
+
+/**
+ * Validates an array of unified diff hunks against their headers.
+ */
+export const validateDiffHunks = (
+  hunks: string[]
+): { isValid: boolean; error?: string; invalidHunkIndex?: number } => {
+  if (!Array.isArray(hunks)) {
+      return { isValid: false, error: "Input is not an array of hunks." };
+  }
+
+  for (let i = 0; i < hunks.length; i++) {
+      const hunk = hunks[i];
+      if (typeof hunk !== 'string') {
+           return { isValid: false, error: `Hunk at index ${i} is not a string.`, invalidHunkIndex: i };
+      }
+
+      // 1. Find hunk header
+      const headerMatch = hunk.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+      if (!headerMatch) {
+          if (hunk.trim() === '' || hunk.includes('index ') || hunk.startsWith('diff --git')) {
+               console.warn(`Skipping validation for potentially non-content hunk ${i + 1}`);
+               continue;
+          }
+           return { isValid: false, error: `Hunk ${i + 1}: Could not parse header '@@ -old,lines +new,lines @@'.`, invalidHunkIndex: i };
+      }
+
+      const oldLineCountHeader = parseInt(headerMatch[2] || '1', 10);
+      const newLineCountHeader = parseInt(headerMatch[4] || '1', 10);
+
+      // 2. Get lines *after* the header
+      const headerEndIndex = hunk.indexOf('@@', headerMatch[0].indexOf('@@') + 2);
+      if (headerEndIndex === -1) {
+          return { isValid: false, error: `Hunk ${i + 1}: Malformed header or no content after header.`, invalidHunkIndex: i };
+      }
+      // Get content AFTER the header line itself
+      const contentAfterHeader = hunk.substring(headerEndIndex + 2);
+      // Split and **filter out completely empty lines** before processing
+      const contentLines = contentAfterHeader.split('\n').filter((line, index, arr) => {
+          // Keep non-empty lines OR keep the last line *only if* it's empty AND the content didn't end with \n (split adds extra empty string then)
+          // A simpler filter: Keep only non-empty lines or lines with only whitespace (which might be valid context)
+          // Let's refine: keep lines that are not *strictly* empty (''). Whitespace-only lines are context.
+          // Filter logic: Remove the *very last* element ONLY if it's an empty string (artefact of split).
+          if (index === arr.length - 1 && line === '') return false;
+          return true; // Keep all other lines, including those with only whitespace
+      });
+
+
+      // 3. Count actual lines
+      let actualOldLines = 0;
+      let actualNewLines = 0;
+
+      for (const line of contentLines) {
+          // Ignore comments specific to diff tools like '\ No newline at end of file'
+          if (line.startsWith('\\')) continue;
+
+          if (line.startsWith('-')) {
+              actualOldLines++;
+          } else if (line.startsWith('+')) {
+              actualNewLines++;
+          } else if (line.startsWith(' ')) {
+              actualOldLines++;
+              actualNewLines++;
+          } else {
+               // Stricter: If a line doesn't start with known prefixes, it's invalid
+               return {
+                   isValid: false,
+                   error: `Hunk ${i + 1}: Line "${line.substring(0, 50)}..." does not start with ' ', '+', '-', or '\\'.`,
+                   invalidHunkIndex: i
+               };
+          }
+      }
+
+      // 4. Compare counts
+      if (actualOldLines !== oldLineCountHeader) {
+          return {
+              isValid: false,
+              error: `Hunk ${i + 1}: Header expected ${oldLineCountHeader} old lines ('-' or ' '), but found ${actualOldLines}.`,
+              invalidHunkIndex: i
+          };
+      }
+      if (actualNewLines !== newLineCountHeader) {
+          return {
+              isValid: false,
+              error: `Hunk ${i + 1}: Header expected ${newLineCountHeader} new lines ('+' or ' '), but found ${actualNewLines}.`,
+              invalidHunkIndex: i
+          };
+      }
+       console.log(`Hunk ${i + 1} validated successfully.`);
+  }
+
+  return { isValid: true };
 };

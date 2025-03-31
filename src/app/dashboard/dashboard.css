@@ -183,3 +183,12 @@
   color: #6B7280; /* Gray-500 */
   font-size: 0.75rem;
 }
+
+@layer base {
+  html {
+    @apply antialiased text-gray-900;
+  }
+  body {
+    @apply bg-white;
+  }
+}

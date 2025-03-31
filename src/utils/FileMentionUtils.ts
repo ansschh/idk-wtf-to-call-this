@@ -22,27 +22,27 @@ const MENTION_REGEX = /@\[([^\]]+)\]\(([^)]+)\)/g;
  * @returns Object containing clean text and extracted mentions
  */
 export const parseMentions = (
-  text: string, 
+  text: string,
   availableFiles: {id: string, name: string, type: string}[]
 ): TextWithMentions => {
   const mentions: FileMention[] = [];
-  
+
   // Find all mentions in the format @[name](id)
   let match;
   while ((match = MENTION_REGEX.exec(text)) !== null) {
     const name = match[1];
     const id = match[2];
-    
+
     // Try to find the file type
     const fileInfo = availableFiles.find(f => f.id === id);
     const type = fileInfo?.type === 'folder' ? 'folder' : 'file';
-    
+
     mentions.push({ id, name, type });
   }
-  
+
   // Replace mentions with plain text version for storage
   const cleanText = text.replace(MENTION_REGEX, '@$1');
-  
+
   return { text: cleanText, mentions };
 };
 
@@ -54,57 +54,69 @@ export const parseMentions = (
  * @returns React element with formatted mentions
  */
 export const renderTextWithMentions = (
-  text: string, 
+  text: string,
   mentions: FileMention[] = [],
   onMentionClick?: (id: string) => void
 ): React.ReactNode => {
   if (!mentions || mentions.length === 0) {
     return text;
   }
-  
+
   // Create a map of mentions for quick lookup
   const mentionMap = new Map<string, FileMention>();
   mentions.forEach(mention => {
     mentionMap.set(mention.name, mention);
   });
-  
+
   // Split the message by @ symbol
   const parts = text.split('@');
-  
+
   if (parts.length === 1) {
     return text; // No @ symbols
   }
-  
-  // Render each part, checking for mentions
+
+  // --- FIX: Build an array of elements to render ---
+  const elementsToRender: React.ReactNode[] = [parts[0]]; // Start with the first part
+
+  parts.slice(1).forEach((part, index) => {
+    // Check if this part starts with a mention name
+    const mentionName = mentions.find(m => part.startsWith(m.name))?.name;
+
+    if (mentionName) {
+      const mention = mentionMap.get(mentionName);
+      const restOfText = part.substring(mentionName.length);
+
+      // Push the mention span and the rest of the text for this part
+      elementsToRender.push(
+        <React.Fragment key={`mention-${index}`}>
+          <span
+            className="inline-flex items-center bg-blue-600/30 px-1.5 rounded-md text-blue-300 cursor-pointer hover:bg-blue-600/40"
+            onClick={() => mention && onMentionClick && onMentionClick(mention.id)}
+          >
+            @{mentionName}
+          </span>
+          {restOfText}
+        </React.Fragment>
+      );
+    } else {
+      // Push the '@' symbol and the rest of the text for this part
+      elementsToRender.push(
+        <React.Fragment key={`text-${index}`}>
+          @{part}
+        </React.Fragment>
+      );
+    }
+  });
+  // --- END FIX ---
+
+  // Render the array of elements within a single fragment
   return (
-    <>
-      {parts[0]}
-      {parts.slice(1).map((part, index) => {
-        // Check if this part starts with a mention name
-        const mentionName = mentions.find(m => part.startsWith(m.name))?.name;
-        
-        if (mentionName) {
-          const mention = mentionMap.get(mentionName);
-          const restOfText = part.substring(mentionName.length);
-          
-          return (
-            <React.Fragment key={`mention-${index}`}>
-              <span 
-                className="inline-flex items-center bg-blue-600/30 px-1.5 rounded-md text-blue-300 cursor-pointer hover:bg-blue-600/40"
-                onClick={() => mention && onMentionClick && onMentionClick(mention.id)}
-              >
-                @{mentionName}
-              </span>
-              {restOfText}
-            </React.Fragment>
-          );
-        }
-        
-        return <React.Fragment key={`text-${index}`}>@{part}</React.Fragment>;
-      })}
-    </>
+    <React.Fragment>
+      {elementsToRender}
+    </React.Fragment>
   );
 };
+
 
 /**
  * Format a message with code blocks and syntax highlighting
@@ -114,7 +126,7 @@ export const renderTextWithMentions = (
 export const formatMessageWithCodeBlocks = (text: string): React.ReactNode => {
   // Split by code blocks
   const parts = text.split(/(```[\s\S]*?```)/g);
-  
+
   return (
     <>
       {parts.map((part, index) => {
@@ -124,7 +136,7 @@ export const formatMessageWithCodeBlocks = (text: string): React.ReactNode => {
           const firstLineEnd = part.indexOf('\n');
           const language = part.substring(3, firstLineEnd).trim();
           const code = part.substring(firstLineEnd + 1, part.length - 3).trim();
-          
+
           return (
             <div key={`code-${index}`} className="my-2 rounded-md overflow-hidden bg-gray-900">
               {language && (
@@ -138,7 +150,7 @@ export const formatMessageWithCodeBlocks = (text: string): React.ReactNode => {
             </div>
           );
         }
-        
+
         // Regular text
         return <span key={`text-${index}`}>{part}</span>;
       })}
@@ -155,13 +167,13 @@ export const extractSuggestion = (text: string): { code: string, language: strin
   // Match code blocks
   const codeBlockRegex = /```([a-z]*)\n([\s\S]*?)```/g;
   const match = codeBlockRegex.exec(text);
-  
+
   if (match) {
     const language = match[1].trim();
     const code = match[2].trim();
     return { code, language };
   }
-  
+
   return null;
 };
 

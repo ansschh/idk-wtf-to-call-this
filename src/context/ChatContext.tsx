@@ -1,27 +1,33 @@
 // context/ChatContext.tsx
-import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
+import React, { createContext, useState, useContext, useEffect, ReactNode, useCallback } from 'react';
 import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
 interface ChatMessage {
   id: string;
-  content: string;
-  userId: string;
-  userName: string;
-  createdAt: Date;
-  projectId: string;
+  sender: string;
+  content: string; // Explanation
+  timestamp: Date;
+  attachments?: any[];
+  mentions?: any[];
+  diffHunks?: string[]; // Store diffs here instead of suggestions
+  isError?: boolean;
 }
+
 
 interface ChatContextType {
   isChatOpen: boolean;
   openChat: () => void;
   closeChat: () => void;
   toggleChat: () => void;
-  chatMessages: ChatMessage[];
-  sendMessage: (content: string, projectId: string, userId: string, userName: string) => Promise<void>;
+  // chatMessages: ChatMessage[]; // Remove if managed solely in ChatWindow
+  // sendMessage: (content: string, projectId: string, userId: string, userName: string) => Promise<void>; // Remove if managed solely in ChatWindow
   unreadCount: number;
   markAsRead: () => void;
+  activeSessionId: string | null; // <-- ADDED
+  setActiveSessionId: (sessionId: string | null) => void; // <-- ADDED
 }
+
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
@@ -30,6 +36,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [lastReadTimestamp, setLastReadTimestamp] = useState<Date | null>(null);
+  const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null); // <-- ADDED state
 
   const openChat = () => {
     setIsChatOpen(true);
@@ -51,6 +58,12 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setUnreadCount(0);
     setLastReadTimestamp(new Date());
   };
+
+  const setActiveSessionId = useCallback((sessionId: string | null) => {
+    console.log('[ChatContext] Setting activeSessionId:', sessionId);
+    setActiveSessionIdState(sessionId);
+ }, []); // <-- ADDED callback
+
 
   // This would normally fetch messages from Firebase
   // For demo purposes, we're just providing the interface
@@ -128,10 +141,10 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       openChat,
       closeChat,
       toggleChat,
-      chatMessages,
-      sendMessage,
       unreadCount,
-      markAsRead
+      markAsRead,
+      activeSessionId, // <-- Provide ID
+      setActiveSessionId // <-- Provide setter
     }}>
       {children}
     </ChatContext.Provider>
