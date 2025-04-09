@@ -51,99 +51,109 @@ export class ChatFileUtils {
    * @param userId User ID
    * @returns Promise with upload result including data object
    */
-  static async uploadChatFile(
-    file: File,
-    projectId: string,
-    userId: string
-  ): Promise<FileHandlingResult> {
-    const tempId = `chat-file-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    const timestamp = Date.now();
-    // Sanitize filename for storage path, ensuring uniqueness
-    const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const storagePath = `chats/${projectId}/${userId}/${timestamp}_${safeFileName}`;
-    const storageRef = ref(storage, storagePath);
+// utils/ChatFileUtils.ts - With CORS Fix
 
-    Logger.log(`[ChatFileUtils] Uploading ${file.name} (${file.type}) to ${storagePath}`);
+/**
+ * Upload a file for chat attachment.
+ * - Images/Binaries go to Firebase Storage, returning HTTPS downloadURL.
+ * - Text files have content read. Storage upload for text is optional.
+ * @param file The file to upload
+ * @param projectId Current project ID
+ * @param userId User ID
+ * @returns Promise with upload result including data object
+ */
+static async uploadChatFile(
+  file: File,
+  projectId: string,
+  userId: string
+): Promise<FileHandlingResult> {
+  const tempId = `chat-file-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  Logger.log(`[ChatFileUtils] Processing ${file.name} (${file.type})`);
 
-    try {
-      // Determine file type for handling
-      // More robust check for common text/code file extensions
-      const isTextFile =
-        file.type.startsWith('text/') ||
-        /\.(txt|tex|bib|md|json|csv|xml|html|css|js|ts|py|java|c|cpp|h|hpp|sh|cls|sty|log|r|sql|yaml|toml)$/i.test(file.name);
-      const isImage = file.type.startsWith('image/');
+  try {
+    // Determine file type for handling
+    const isTextFile =
+      file.type.startsWith('text/') ||
+      /\.(txt|tex|bib|md|json|csv|xml|html|css|js|ts|py|java|c|cpp|h|hpp|sh|cls|sty|log|r|sql|yaml|toml)$/i.test(file.name);
+    const isImage = file.type.startsWith('image/');
 
-      let fileContent: string | null = null;
-      let downloadURL: string = ''; // Initialize downloadURL
+    let fileContent: string | null = null;
+    let url: string = '';
 
-      // --- Handle TEXT Files ---
-      if (isTextFile) {
-        Logger.log(`[ChatFileUtils] Reading text content for ${file.name}`);
-        fileContent = await this.readFileAsText(file);
-        // We won't upload text files to storage for chat attachments by default
-        downloadURL = ''; // No storage URL needed for chat message itself
-        Logger.log(`[ChatFileUtils] Text content read for ${file.name}. Size: ${fileContent?.length ?? 0}`);
-
-      // --- Handle IMAGE and OTHER BINARY Files ---
-      } else {
-        Logger.log(`[ChatFileUtils] Uploading binary/image file ${file.name} to storage...`);
-        // Upload to Firebase Storage
-        const uploadResult = await uploadBytes(storageRef, file);
-        Logger.log(`[ChatFileUtils] Upload complete for ${file.name}. Metadata:`, uploadResult.metadata);
-        Logger.log(`[ChatFileUtils] Getting download URL...`);
-        // Get the HTTPS download URL (this includes access tokens)
-        downloadURL = await getDownloadURL(storageRef);
-        Logger.log(`[ChatFileUtils] Got download URL for ${file.name}: ${downloadURL.substring(0, 70)}...`);
-        fileContent = null; // No text content for binaries/images
+    // --- CHANGE OF APPROACH: Always use DataURL for images in chat context ---
+    if (isImage) {
+      Logger.log(`[ChatFileUtils] Reading image as dataURL for chat: ${file.name}`);
+      try {
+        // For images, just use dataURL to avoid CORS issues entirely
+        fileContent = await this.readFileAsDataURL(file);
+        url = fileContent; // Use the dataURL as the URL
+        Logger.log(`[ChatFileUtils] Successfully read image as dataURL. Size: ${fileContent.length}`);
+      } catch (dataUrlError) {
+        Logger.error(`[ChatFileUtils] Error reading image as dataURL:`, dataUrlError);
+        throw new Error(`Failed to read image as dataURL: ${dataUrlError instanceof Error ? dataUrlError.message : 'Unknown error'}`);
       }
-
-      // --- Construct Success Response ---
-      const resultData = {
-          id: tempId, // Use temporary ID
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          url: downloadURL, // HTTPS URL (for images/binaries) or empty string (for text)
-          content: fileContent, // Text content or null
-          uploadedAt: new Date().toISOString()
-      };
-
-      return {
-        success: true,
-        data: resultData,
-        // Keep top-level url/content for simple access if needed
-        url: downloadURL,
-        content: fileContent ?? undefined, // Return undefined if null
-      };
-
-    } catch (error) {
-      Logger.error(`[ChatFileUtils] Error uploading file ${file.name}:`, error);
-      // Attempt to provide more specific error info
-      let errorMessage = 'Unknown error uploading file';
-      if (error instanceof Error) {
-          errorMessage = error.message;
-          if ((error as any).code) { // Firebase storage errors often have codes
-              switch ((error as any).code) {
-                  case 'storage/unauthorized':
-                      errorMessage = 'Permission denied. Check Firebase Storage security rules.';
-                      break;
-                  case 'storage/canceled':
-                      errorMessage = 'Upload cancelled.';
-                      break;
-                  case 'storage/object-not-found':
-                  case 'storage/bucket-not-found':
-                      errorMessage = 'Storage path error. Check configuration.';
-                      break;
-                  // Add more specific Firebase error codes if needed
-                  default:
-                      errorMessage = `Storage Error (${(error as any).code}): ${error.message}`;
-                      break;
-              }
-          }
-      }
-      return { success: false, error: errorMessage };
+    } 
+    // --- Handle TEXT Files ---
+    else if (isTextFile) {
+      Logger.log(`[ChatFileUtils] Reading text content for ${file.name}`);
+      fileContent = await this.readFileAsText(file);
+      url = ''; // No URL needed for text
+      Logger.log(`[ChatFileUtils] Text content read for ${file.name}. Size: ${fileContent?.length ?? 0}`);
     }
+    // --- Handle OTHER Files ---
+    else {
+      // For other file types, we can still try Firebase Storage
+      // but have a fallback to prevent failures
+      const timestamp = Date.now();
+      const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `chats/${projectId}/${userId}/${timestamp}_${safeFileName}`;
+      const storageRef = ref(storage, storagePath);
+
+      try {
+        Logger.log(`[ChatFileUtils] Attempting Firebase Storage upload for: ${file.name}`);
+        const metadata = {
+          contentType: file.type,
+          customMetadata: { 'userId': userId, 'projectId': projectId }
+        };
+        
+        const uploadResult = await uploadBytes(storageRef, file, metadata);
+        url = await getDownloadURL(storageRef);
+        Logger.log(`[ChatFileUtils] Upload and URL successful for ${file.name}`);
+      } catch (storageError) {
+        Logger.warn(`[ChatFileUtils] Firebase Storage upload failed, using object URL: ${storageError}`);
+        // Generate Blob URL as fallback for other file types
+        url = URL.createObjectURL(file);
+        Logger.log(`[ChatFileUtils] Created blob URL for ${file.name}: ${url}`);
+      }
+    }
+
+    // --- Construct Success Response ---
+    const resultData = {
+      id: tempId,
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      url: url,
+      content: fileContent,
+      uploadedAt: new Date().toISOString()
+    };
+
+    return {
+      success: true,
+      data: resultData,
+      url: url,
+      content: fileContent ?? undefined,
+    };
+
+  } catch (error) {
+    Logger.error(`[ChatFileUtils] Error processing file ${file.name}:`, error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : 'Unknown error processing file' 
+    };
   }
+}
+
 
   /**
    * Import a file to the project file tree (projectFiles collection)

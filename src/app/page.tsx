@@ -1,15 +1,25 @@
 "use client";
 
 import { useUser } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { useEffect } from "react";
 
 export default function LandingPage() {
-  const { user } = useUser();
+  const { user, isLoaded } = useUser();
+  const router = useRouter();
+
+  // Redirect to dashboard if logged in
+  useEffect(() => {
+    if (isLoaded && user) {
+      router.push("/dashboard");
+    }
+  }, [isLoaded, user, router]);
 
   return (
     <main className="flex flex-col items-center justify-center h-screen">
       <h1 className="text-4xl font-bold">Welcome to LaTeX Scholar</h1>
-      {!user && (
+      {isLoaded && !user && (
         <p className="mt-4">
           <Link href="/sign-in" className="text-teal-600 underline">
             Sign in
@@ -20,12 +30,9 @@ export default function LandingPage() {
           </Link>
         </p>
       )}
-      {user && (
+      {isLoaded && user && (
         <p className="mt-4">
-          You’re signed in. Go to your{" "}
-          <Link href="/dashboard" className="text-teal-600 underline">
-            dashboard
-          </Link>.
+          Redirecting to your dashboard...
         </p>
       )}
     </main>

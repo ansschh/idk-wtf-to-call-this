@@ -17,6 +17,7 @@ interface Project {
   id: string;
   title: string;
   owner: string;
+  createdAt: Date | null;    // Store as Date object
   lastModified: {
     seconds: number;
     nanoseconds: number;

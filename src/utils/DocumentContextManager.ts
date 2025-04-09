@@ -24,12 +24,15 @@ export class DocumentContextManager {
   private currentFileId: string | null = null;
   private documentTree: LaTeXNode | null = null;
   private fileContent: string = '';
-  private projectFiles: Array<{
+  public  projectFiles: Array<{
     id: string;
     name: string;
     type: string;
     parentId: string | null;
   }> = [];
+  public setProjectFiles(files: Array<{ id: string; name: string; type: string; parentId: string | null }>) {
+    this.projectFiles = files;
+  }
   private treeProcessor: LaTeXTreeProcessor;
   
   constructor(projectId: string, userId: string) {
@@ -37,6 +40,44 @@ export class DocumentContextManager {
     this.userId = userId;
     this.treeProcessor = new LaTeXTreeProcessor();
   }
+
+  public async gatherProjectContext(): Promise<string> {
+    let context = "Complete Project Context:\n\n";
+    
+    // Loop through all project files that were loaded by loadProjectFiles()
+    for (const file of this.projectFiles) {
+      // Only process .tex files
+      if (file.name.endsWith('.tex')) {
+        let fileContent = '';
+        try {
+          // Try to load the file from the 'projectFiles' collection first
+          const fileRef = doc(db, 'projectFiles', file.id);
+          const fileDoc = await getDoc(fileRef);
+          if (fileDoc.exists()) {
+            fileContent = fileDoc.data().content || '';
+          } else {
+            throw new Error("Not found in projectFiles");
+          }
+        } catch (error) {
+          // If not available in 'projectFiles', try 'project_files' collection
+          try {
+            const fileRef = doc(db, 'project_files', file.id);
+            const fileDoc = await getDoc(fileRef);
+            if (fileDoc.exists()) {
+              fileContent = fileDoc.data().content || '';
+            }
+          } catch (error2) {
+            console.error(`Error loading content for file ${file.name}:`, error2);
+          }
+        }
+        
+        // Append file name and its content to the context string
+        context += `Filename: ${file.name}\nContent:\n${fileContent}\n\n----------------------------------\n\n`;
+      }
+    }
+    return context;
+  }
+  
   
   public async initializeContext(fileId: string | null = null): Promise<DocumentContext | null> {
     try {

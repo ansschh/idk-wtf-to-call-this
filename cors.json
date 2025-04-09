@@ -1,8 +1,16 @@
 [
   {
-    "origin": ["http://localhost:3000", "https://your-production-domain.com"],
-    "method": ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"],
-    "responseHeader": ["*"],
-    "maxAgeSeconds": 3600
+    "origin": ["*"],
+    "method": ["GET", "PUT", "POST", "DELETE", "HEAD"],
+    "maxAgeSeconds": 3600,
+    "responseHeader": [
+      "Content-Type",
+      "Content-Disposition",
+      "Content-Length",
+      "Content-Encoding",
+      "Content-Range",
+      "X-Download-Options",
+      "Access-Control-Allow-Origin"
+    ]
   }
 ]

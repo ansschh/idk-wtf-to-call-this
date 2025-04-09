@@ -2,7 +2,8 @@
 // Enhanced LaTeX service with server-side rendering
 
 // Define the API URL for the LaTeX rendering server
-const LATEX_SERVER_URL = process.env.NEXT_PUBLIC_LATEX_SERVER_URL || 'http://localhost:3001';
+const LATEX_SERVER_URL = process.env.LATEX_SERVER_URL || 'http://localhost:3001';
+const API_KEY = process.env.LATEX_API_KEY || 'ewZolV1dblxUYDjTrLXyqFkipvSNRM0vKP1H03gjM3JUIKhGuxb6x26CqaOHAjyGbtL95LM9gQPJ4TSa1LI4RlkgMATbXAj0fOTmgdFupwHULRJhTNHzQcCyw6engs4e';
 
 interface CompilationResult {
   success: boolean;
@@ -76,12 +77,14 @@ export async function compileLatex(code: string, projectId: string): Promise<{
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-api-key': API_KEY || 'ewZolV1dblxUYDjTrLXyqFkipvSNRM0vKP1H03gjM3JUIKhGuxb6x26CqaOHAjyGbtL95LM9gQPJ4TSa1LI4RlkgMATbXAj0fOTmgdFupwHULRJhTNHzQcCyw6engs4e' // ← Add this
       },
       body: JSON.stringify({
         latex: processedCode,
-        projectId: projectId, // Pass projectId for image handling
+        projectId: projectId,
       }),
     });
+    
 
     if (!response.ok) {
       const errorText = await response.text();

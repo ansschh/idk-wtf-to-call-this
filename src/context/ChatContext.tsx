@@ -1,6 +1,6 @@
 // context/ChatContext.tsx
 import React, { createContext, useState, useContext, useEffect, ReactNode, useCallback } from 'react';
-import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, updateDoc, doc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
 interface ChatMessage {
@@ -20,13 +20,13 @@ interface ChatContextType {
   openChat: () => void;
   closeChat: () => void;
   toggleChat: () => void;
-  // chatMessages: ChatMessage[]; // Remove if managed solely in ChatWindow
-  // sendMessage: (content: string, projectId: string, userId: string, userName: string) => Promise<void>; // Remove if managed solely in ChatWindow
   unreadCount: number;
   markAsRead: () => void;
-  activeSessionId: string | null; // <-- ADDED
-  setActiveSessionId: (sessionId: string | null) => void; // <-- ADDED
+  activeSessionId: string | null;
+  setActiveSessionId: (sessionId: string | null) => void;
+  updateChatTitle: (sessionId: string, title: string) => Promise<void>; // Add this
 }
+
 
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -62,14 +62,31 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const setActiveSessionId = useCallback((sessionId: string | null) => {
     console.log('[ChatContext] Setting activeSessionId:', sessionId);
     setActiveSessionIdState(sessionId);
- }, []); // <-- ADDED callback
+  }, []); // <-- ADDED callback
+
+  const updateChatTitle = useCallback(async (sessionId: string, title: string) => {
+    if (!sessionId || !title) return;
+
+    try {
+      // Update title in Firestore
+      const sessionRef = doc(db, "chatSessions", sessionId);
+      await updateDoc(sessionRef, {
+        title,
+        lastUpdated: serverTimestamp()
+      });
+      console.log(`[ChatContext] Updated chat title: "${title}" for session: ${sessionId}`);
+    } catch (error) {
+      console.error('[ChatContext] Error updating chat title:', error);
+    }
+  }, []);
+
 
 
   // This would normally fetch messages from Firebase
   // For demo purposes, we're just providing the interface
   const sendMessage = async (
-    content: string, 
-    projectId: string, 
+    content: string,
+    projectId: string,
     userId: string,
     userName: string
   ) => {
@@ -82,7 +99,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     //   projectId,
     //   createdAt: serverTimestamp()
     // });
-    
+
     // For now, we'll just add it locally
     const newMessage: ChatMessage = {
       id: Date.now().toString(),
@@ -92,7 +109,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       projectId,
       createdAt: new Date()
     };
-    
+
     setChatMessages(prev => [...prev, newMessage]);
   };
 
@@ -143,12 +160,13 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       toggleChat,
       unreadCount,
       markAsRead,
-      activeSessionId, // <-- Provide ID
-      setActiveSessionId // <-- Provide setter
+      activeSessionId,
+      setActiveSessionId,
+      updateChatTitle  // Add this line to include the function
     }}>
       {children}
     </ChatContext.Provider>
-  );
+  );  
 };
 
 export const useChat = () => {

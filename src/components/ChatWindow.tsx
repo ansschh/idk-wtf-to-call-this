@@ -1,10 +1,10 @@
 // components/ChatWindow.tsx
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import chatService from '@/services/chatService';
+
 import {
   X, Code, Send, Plus, Clock, ChevronDown, Paperclip, File, MessageSquare,
-  Folder,
-  Download, Check, Loader, Edit, Image as ImageIcon // <--- ADD IT HERE
+  Folder, Download, Check, Loader, Edit, Image as ImageIcon, Brain
 } from 'lucide-react';
 import DiffViewer from './DiffViewer'; // Import the DiffViewer
 import SuggestionOverlay from './SuggestionOverlay';
@@ -118,6 +118,7 @@ const AVAILABLE_MODELS: LLMModel[] = [
   { id: 'gemini-ultra', name: 'Gemini Ultra', provider: 'google', providerName: 'Google' }
 ];
 
+
 // Type guard for file mentions - for use in rendering
 const isFileMention = (item: any): item is FileMention => {
   return item &&
@@ -125,6 +126,65 @@ const isFileMention = (item: any): item is FileMention => {
     'id' in item &&
     'name' in item &&
     'type' in item;
+};
+
+// Helper: Determine if a file is an image based on its extension.
+const isImageFile = (filename: string): boolean => {
+  const extensions = ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.bmp', '.webp'];
+  return extensions.some(ext => filename.toLowerCase().endsWith(ext));
+};
+
+// At the top of ChatWindow.tsx, add this helper:
+const compressDataUrl = (
+  dataUrl: string,
+  quality: number = 0.7,
+  maxWidth: number = 800
+): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      // create an offscreen canvas
+      const canvas = document.createElement('canvas');
+      let { width, height } = img;
+      // scale down if too wide
+      if (width > maxWidth) {
+        height = Math.round((maxWidth / width) * height);
+        width = maxWidth;
+      }
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return reject(new Error('Cannot get canvas context'));
+      ctx.drawImage(img, 0, 0, width, height);
+      // re-encode to JPEG (or PNG if you prefer) at given quality
+      const compressed = canvas.toDataURL('image/jpeg', quality);
+      resolve(compressed);
+    };
+    img.onerror = err => reject(err);
+    img.src = dataUrl;
+  });
+};
+
+
+// Helper function to format time
+const formatTime = (date: Date) => {
+  if (!date) return 'Just now';
+
+  const now = new Date();
+  const diff = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+  if (diff < 60) return 'Just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+
+  if (diff < 604800) { // Less than a week
+    return date.toLocaleDateString(undefined, { weekday: 'short' });
+  }
+
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric'
+  });
 };
 
 // Adding performance styles for smooth resizing
@@ -215,6 +275,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const [sessionTitle, setSessionTitle] = useState<string>(activeSession?.title || '');
+  const [editingTitle, setEditingTitle] = useState<boolean>(false);
+
+
   // UI state
   const [newMessage, setNewMessage] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
@@ -241,6 +305,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
   // Added for resize performance
   const [isResizing, setIsResizing] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
 
   const chatContext = useChat(); // Get the whole context object
   const rafRef = useRef<number | null>(null);
@@ -255,7 +320,62 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const historyRef = useRef<HTMLDivElement>(null);
   const unsubscribeRef = useRef<() => void | null>(null);
   const mentionListRef = useRef<HTMLDivElement>(null);
+
+
+
+// inside ChatWindow, alongside your other helpers:
+
+async function autoGenerateTitle(sessionId: string, firstMessage: string) {
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [
+        { role: 'system', content: 'You are a title generator. Create a very short (3–5 word) title summarizing this user message.' },
+        { role: 'user', content: firstMessage }
+      ],
+      max_tokens: 8
+    });
+    const generated = completion.choices[0].message.content.trim();
+    const title = generated || 'Untitled Chat';
+
+    // update Firestore
+    const sessionRef = doc(db, 'chatSessions', sessionId);
+    await updateDoc(sessionRef, {
+      title,
+      lastUpdated: serverTimestamp()
+    });
+
+    // update local UI state
+    setSessionTitle(title);
+  } catch (err) {
+    console.error('Failed to auto‑generate title:', err);
+  }
+}
+
   console.log('[ChatWindow Render] Editor Ref View available:', !!editorRef?.current?.view);
+
+  const ThinkingIndicator = () => (
+    <div className="flex flex-col items-start message-container">
+      <div className="text-xs text-gray-400 mb-1 px-1">
+        LaTeX Assistant
+      </div>
+      <div className="max-w-[85%] rounded-lg px-3 py-2 bg-gray-700/60 text-gray-200">
+        <div className="flex items-center">
+          <Brain className="h-5 w-5 mr-2 text-blue-400 animate-pulse" />
+          <div className="flex items-center">
+            <span className="text-sm">Thinking</span>
+            <span className="flex ml-2">
+              <span className="h-1.5 w-1.5 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+              <span className="h-1.5 w-1.5 bg-blue-400 rounded-full mx-1 animate-bounce [animation-delay:-0.15s]"></span>
+              <span className="h-1.5 w-1.5 bg-blue-400 rounded-full animate-bounce"></span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+
 
 
   const parseMentions = useCallback((message: string): { text: string, mentions: FileMention[] } => {
@@ -273,6 +393,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     const cleanText = message.replace(MENTION_REGEX, '@$1');
     return { text: cleanText, mentions };
   }, [projectFiles]); // Depend on projectFiles prop
+
 
   // --- Mention Rendering Logic (Integrated) ---
   // Define this inside the ChatWindow component function scope
@@ -364,111 +485,109 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     };
   }, []);
 
-  // Load chat sessions from Firestore
+
+
+  // Create a new chat session in Firestore
+  const createNewChatInFirestore = useCallback(async () => {
+    try {
+      console.log('[createNewChat] Creating Firestore session...');
+      const sessionRef = await addDoc(collection(db, "chatSessions"), {
+        userId: userId,
+        projectId: projectId,
+        title: "New Chat", // Start with default title, will update later
+        createdAt: serverTimestamp(),
+        lastUpdated: serverTimestamp(),
+        modelId: 'gpt-4o'
+      });
+      const newSession: ChatSession = {
+        id: sessionRef.id,
+        title: "New Chat",
+        timestamp: new Date(),
+        messages: [],
+        currentModel: AVAILABLE_MODELS[0]
+      };
+      console.log(`[createNewChat] Session created: ${sessionRef.id}. Updating context...`);
+      chatContext.setActiveSessionId(newSession.id);
+      return newSession;
+    } catch (error) {
+      console.error("[createNewChat] Error:", error);
+      chatContext.setActiveSessionId(null);
+      return null;
+    }
+  }, [userId, projectId, chatContext.setActiveSessionId]);
+
+  // Add this to your session loading effect to properly set loading to false
   useEffect(() => {
-    const loadChatSessions = async () => {
-      if (!projectId || !userId) {
-        console.warn('[ChatWindow Load] Missing projectId or userId');
-        setLoading(false); // Stop loading if cannot proceed
-        return;
-      }
-      try {
-
-        console.log('[ChatWindow Load] Fetching sessions...');
-        const chatSessionsRef = collection(db, "chatSessions");
-        const q = query(chatSessionsRef, where("projectId", "==", projectId), where("userId", "==", userId), orderBy("lastUpdated", "desc"))
-
-        const querySnapshot = await getDocs(q);
-        const sessions: ChatSession[] = [];
-
-        // Process each session
-        for (const doc of querySnapshot.docs) {
-          const data = doc.data();
-
-          // Load messages for this session
-          const messagesRef = collection(db, "chatSessions", doc.id, "messages");
-          const messagesQuery = query(messagesRef, orderBy("timestamp", "asc"));
-          const messagesSnapshot = await getDocs(messagesQuery);
-
-          const messages: ChatMessage[] = messagesSnapshot.docs.map(msgDoc => {
-            const msgData = msgDoc.data();
-
-            return {
-              id: msgDoc.id,
-              sender: msgData.sender,
-              content: msgData.content,
-              // SAFER TIMESTAMP HANDLING:
-              timestamp:
-                msgData.timestamp instanceof Timestamp
-                  ? msgData.timestamp.toDate()
-                  : msgData.timestamp instanceof Date
-                    ? msgData.timestamp
-                    : new Date(),
-              attachments: msgData.attachments || [],
-              mentions: msgData.mentions || [],
-              suggestions: msgData.suggestions || []
-            };
-          });
-
-          // Find the model or use default
-          const modelId = data.modelId || 'gpt-4o';
-          const model = AVAILABLE_MODELS.find(m => m.id === modelId) || AVAILABLE_MODELS[0];
-
-          sessions.push({
-            id: doc.id,
-            title: data.title || 'New Chat',
-            // SAFER TIMESTAMP HANDLING:
-            timestamp:
-              data.timestamp instanceof Timestamp
-                ? data.timestamp.toDate()
-                : data.timestamp instanceof Date
-                  ? data.timestamp
-                  : new Date(),
-            messages: messages,
-            currentModel: model
-          });
-        }
-
-        setChatSessions(sessions);
-        console.log(`[ChatWindow Load] Found ${sessions.length} sessions.`);
-
-
-        // Create a default session if none exist
-        if (sessions.length === 0) {
-          console.log('[ChatWindow Load] No sessions found, creating new one...');
-          const newSession = await createNewChatInFirestore(); // Ensure this uses context setter
-          if (newSession) {
-            console.log(`[ChatWindow Load] New session created and set active: ${newSession.id}`);
-          } else {
-            console.error('[ChatWindow Load] Failed to create new session.');
-            chatContext.setActiveSessionId(null); // Explicitly set null in context on failure
-          }
-        } else {
-          console.log(`[ChatWindow Load] Setting active session from existing: ${sessions[0].id}`);
-          chatContext.setActiveSessionId(sessions[0].id); // Set ID in context
-          // setActiveSession(sessions[0]); // Let the sync effect handle setting local state
-        }
-      } catch (error) {
-        console.error("[ChatWindow Load] Error loading/setting sessions:", error);
-        chatContext.setActiveSessionId(null); // Set context ID to null on error
-        setActiveSession(null); // Clear local state too
-      } finally {
-        setLoading(false);
-        console.log('[ChatWindow Load] Loading finished.');
-      }
-    };
-
-    if (isOpen) {
-      loadChatSessions();
+    if (!projectId || !userId) {
+      setLoading(false); // End loading if we don't have project/user ID
+      return;
     }
 
-    return () => {
-      // Clean up any listeners when component unmounts
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
+    console.log('[ChatWindow] Setting up sessions listener for project:', projectId);
+
+    // Set loading true initially
+    setLoading(true);
+
+    const chatSessionsRef = collection(db, "chatSessions");
+    const q = query(
+      chatSessionsRef,
+      where("projectId", "==", projectId),
+      where("userId", "==", userId),
+      orderBy("lastUpdated", "desc")
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const updatedSessions: ChatSession[] = [];
+
+      snapshot.forEach(doc => {
+        const data = doc.data();
+
+        // Find the model or use default
+        const modelId = data.modelId || 'gpt-4o';
+        const model = AVAILABLE_MODELS.find(m => m.id === modelId) || AVAILABLE_MODELS[0];
+
+        updatedSessions.push({
+          id: doc.id,
+          title: data.title || 'Untitled Chat',
+          timestamp: data.lastUpdated instanceof Timestamp
+            ? data.lastUpdated.toDate()
+            : data.lastUpdated instanceof Date
+              ? data.lastUpdated
+              : new Date(),
+          messages: [], // We'll load messages separately when needed
+          currentModel: model
+        });
+      });
+
+      console.log(`[ChatWindow] Session listener update: ${updatedSessions.length} sessions`);
+      setChatSessions(updatedSessions);
+
+      // CRITICAL: Set loading to false here
+      setLoading(false);
+
+      // If no active session and we have sessions, set the first one active
+      if (!chatContext.activeSessionId && updatedSessions.length > 0) {
+        chatContext.setActiveSessionId(updatedSessions[0].id);
+      } else if (updatedSessions.length === 0) {
+        // If no sessions at all, create a new one automatically
+        console.log('[ChatWindow] No sessions found, creating new one...');
+        createNewChatInFirestore().then(newSession => {
+          if (newSession) {
+            console.log(`[ChatWindow] New session created with ID: ${newSession.id}`);
+          }
+        });
       }
+    }, (error) => {
+      console.error('[ChatWindow] Error in sessions listener:', error);
+      setLoading(false); // CRITICAL: Make sure to set loading to false on error
+    });
+
+    // Clean up listener on unmount
+    return () => {
+      console.log('[ChatWindow] Cleaning up sessions listener');
+      unsubscribe();
     };
-  }, [projectId, userId, isOpen, chatContext.setActiveSessionId]);
+  }, [projectId, userId, chatContext.activeSessionId, chatContext.setActiveSessionId, createNewChatInFirestore]);
 
   // Subscribe to updates for the active session
   // Subscribe to updates for the active session
@@ -477,28 +596,33 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     let unsubscribe: (() => void) | null = null;
     const currentSessionId = contextActiveSessionId; // Capture context ID
 
-    const subscribeToMessages = () => {
-      if (unsubscribe) unsubscribe(); // Clean previous listener
+    const subscribeToMessages = async () => {
+      // Clear any previous subscription
+      if (unsubscribe) {
+        unsubscribe();
+        unsubscribe = null;
+      }
 
+      // If no active session, clear messages and exit
       if (!currentSessionId) {
         Logger.log("[ChatWindow Listener] No active session ID, clearing messages.");
-        setChatMessages([]); // Clear displayed messages
+        setChatMessages([]);
         return;
       }
 
-      Logger.log(`[ChatWindow Listener] Subscribing to messages for session: ${currentSessionId}`);
-      const messagesRef = collection(db, "chatSessions", currentSessionId, "messages");
-      const messagesQuery = query(messagesRef, orderBy("timestamp", "asc"));
+      try {
+        // First, load the current messages to ensure we have the latest data
+        Logger.log(`[ChatWindow Listener] Loading initial messages for session: ${currentSessionId}`);
 
-      unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
-        // --- SIMPLIFIED LOGIC ---
-        Logger.log(`[ChatWindow Listener] Firestore snapshot for ${currentSessionId}. Docs: ${snapshot.docs.length}, PendingWrites: ${snapshot.metadata.hasPendingWrites}`);
+        const messagesRef = collection(db, "chatSessions", currentSessionId, "messages");
+        const messagesQuery = query(messagesRef, orderBy("timestamp", "asc"));
 
-        const updatedMessages: ChatMessage[] = snapshot.docs.map(doc => {
+        // Load initial messages
+        const initialSnapshot = await getDocs(messagesQuery);
+        const initialMessages: ChatMessage[] = initialSnapshot.docs.map(doc => {
           const data = doc.data();
-          // Map Firestore data to ChatMessage interface
           return {
-            id: doc.id, // Use the REAL Firestore ID
+            id: doc.id,
             sender: data.sender || 'Unknown',
             content: data.content || '',
             timestamp: data.timestamp instanceof Timestamp ? data.timestamp.toDate() : new Date(),
@@ -509,17 +633,48 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           };
         });
 
-        setChatMessages(updatedMessages); // <-- Directly update state with the full list
+        // Set initial messages
+        setChatMessages(initialMessages);
+        Logger.log(`[ChatWindow Listener] Loaded ${initialMessages.length} initial messages for session: ${currentSessionId}`);
 
-        Logger.log(`[ChatWindow Listener] Updated chatMessages state with ${updatedMessages.length} messages.`);
-        // --- END SIMPLIFIED LOGIC ---
+        // Then subscribe to real-time updates
+        Logger.log(`[ChatWindow Listener] Starting real-time subscription for session: ${currentSessionId}`);
 
-      }, (error) => {
-        Logger.error(`[ChatWindow Listener] Error for session ${currentSessionId}:`, error);
+        unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
+          Logger.log(`[ChatWindow Listener] Firestore snapshot for ${currentSessionId}. Docs: ${snapshot.docs.length}, PendingWrites: ${snapshot.metadata.hasPendingWrites}`);
+
+          const updatedMessages: ChatMessage[] = snapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              sender: data.sender || 'Unknown',
+              content: data.content || '',
+              timestamp: data.timestamp instanceof Timestamp ? data.timestamp.toDate() : new Date(),
+              attachments: data.attachments || [],
+              mentions: data.mentions || [],
+              diffHunks: data.diffHunks || [],
+              isError: data.isError || false,
+            };
+          });
+
+          // Only update if there's a difference to avoid unnecessary renders
+          if (JSON.stringify(updatedMessages.map(m => m.id)) !== JSON.stringify(chatMessages.map(m => m.id)) ||
+            updatedMessages.length !== chatMessages.length) {
+            setChatMessages(updatedMessages);
+            Logger.log(`[ChatWindow Listener] Updated chatMessages state with ${updatedMessages.length} messages.`);
+          }
+        }, (error) => {
+          Logger.error(`[ChatWindow Listener] Error subscribing to session ${currentSessionId}:`, error);
+          setChatMessages([]); // Clear messages on error
+        });
+
+      } catch (error) {
+        Logger.error(`[ChatWindow Listener] Error setting up messages for session ${currentSessionId}:`, error);
         setChatMessages([]); // Clear messages on error
-      });
+      }
     };
 
+    // Start the subscription process
     subscribeToMessages();
 
     // Cleanup function
@@ -529,7 +684,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         unsubscribe();
       }
     };
-  }, [contextActiveSessionId]); // Re-run ONLY when the context activeSessionId changes
+  }, [contextActiveSessionId, chatMessages.length]);
 
   // Focus input when chat opens
   useEffect(() => {
@@ -585,6 +740,28 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (activeSession) {
+      setSessionTitle(activeSession.title);
+    }
+  }, [activeSession]);
+
+  const saveSessionTitle = async () => {
+    if (!chatContext.activeSessionId) return;
+    try {
+      const sessionRef = doc(db, 'chatSessions', chatContext.activeSessionId);
+      await updateDoc(sessionRef, {
+        title: sessionTitle || 'Untitled Chat',
+        lastUpdated: serverTimestamp()
+      });
+      setEditingTitle(false);
+    } catch (error) {
+      console.error('Error updating session title:', error);
+    }
+  };
+
+
+
   const renderMessageContent = (msg: ChatMessage): JSX.Element => {
 
     // Nested helper to process inline code segments
@@ -633,38 +810,62 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         parts.push(...processInlineCode(textPart, inlineCodeRegex)); // Use the helper
       }
 
-      // Add the formatted code block element
+      // Add the formatted code block element with fixed copy button
       const language = lang || 'latex'; // Default language
       parts.push(
-        <div key={`code-block-${offset}-${msg.id}`} className="my-2 relative group text-left"> {/* Ensure text-left */}
-          <SyntaxHighlighter
-            language={language}
-            style={vscDarkPlus}
-            customStyle={{
-              margin: 0,
-              padding: '0.75em', // Reduced padding slightly
-              borderRadius: '4px',
-              fontSize: '0.8rem', // Consistent small font size
-              backgroundColor: '#161616', // Darker bg for contrast
-            }}
-            wrapLongLines={true}
-            PreTag="div" // Use div for better wrapping control
-          >
-            {code.trim()}
-          </SyntaxHighlighter>
-          <button
-            onClick={() => copyToClipboard(code.trim())}
-            className="absolute top-1 right-1 p-1 bg-gray-700/50 text-gray-400 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-600 hover:text-gray-200"
-            title="Copy code"
-          >
-            <Copy className="h-3 w-3" /> {/* Smaller copy icon */}
-          </button>
+        <div key={`code-block-${offset}-${msg.id}`} className="my-2 relative text-left">
+          {/* Outer container for the code block */}
+          <div className="relative rounded-md overflow-hidden">
+            {/* The syntax highlighter */}
+            <SyntaxHighlighter
+              language={language}
+              style={vscDarkPlus}
+              customStyle={{
+                margin: 0,
+                padding: '0.75rem',
+                paddingRight: '2.5rem', // Extra padding on right for button
+                borderRadius: '0.25rem',
+                fontSize: '0.8rem',
+                backgroundColor: '#161616',
+              }}
+              wrapLongLines={true}
+              PreTag="div"
+            >
+              {code.trim()}
+            </SyntaxHighlighter>
+
+            {/* Absolutely positioned copy button with higher z-index */}
+            <button
+              onClick={() => copyToClipboard(code.trim())}
+              className="absolute top-2 right-2 p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white rounded shadow-sm z-10"
+              title="Copy code"
+              aria-label="Copy code to clipboard"
+            >
+              <Copy className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       );
 
       lastIndex = offset + match.length;
       return ''; // Necessary for replace behavior
     });
+
+    // Helper function to show copy feedback
+    const copyToClipboard = (text: string) => {
+      navigator.clipboard.writeText(text)
+        .then(() => {
+          // Show a success message (you could implement a toast notification here)
+          console.log("Code copied to clipboard!");
+
+          // Optional: You could add a visual feedback element here
+          // For example, briefly show a "Copied!" message near the button
+        })
+        .catch(err => {
+          console.error("Failed to copy code:", err);
+        });
+    };
+
 
     // 2. Process Remaining Text (after the last code block)
     if (lastIndex < contentToRender.length) {
@@ -889,39 +1090,38 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     return sanitized;
   };
 
-  // Create a new chat session in Firestore
-  const createNewChatInFirestore = useCallback(async () => {
-    try {
-      console.log('[createNewChat] Creating Firestore session...');
-      const sessionRef = await addDoc(collection(db, "chatSessions"), {
-        userId: userId, projectId: projectId, title: "New Chat",
-        createdAt: serverTimestamp(), lastUpdated: serverTimestamp(), modelId: 'gpt-4o'
-      });
-      const newSession: ChatSession = {
-        id: sessionRef.id, title: "New Chat", timestamp: new Date(), messages: [], currentModel: AVAILABLE_MODELS[0]
-      };
-      console.log(`[createNewChat] Session created: ${sessionRef.id}. Updating context...`);
-      chatContext.setActiveSessionId(newSession.id); // Use context setter
-      // setChatSessions(prev => [newSession, ...prev]); // Update cache if needed here or rely on listener
-      // setActiveSession(newSession); // Let sync effect handle this
-      return newSession;
-    } catch (error) {
-      console.error("[createNewChat] Error:", error);
-      chatContext.setActiveSessionId(null); // Set context null on error
-      return null;
-    }
-  }, [userId, projectId, chatContext.setActiveSessionId]); // Dependencies
-
-
-  // Create a new chat and set it as active
   const createNewChat = async () => {
     try {
-      await createNewChatInFirestore();
-      setShowChatHistory(false);
+      // Clear any previous chat state first
+      setNewMessage('');
+      setAttachedFiles([]);
+      setChatMessages([]);
+
+      // Create a new chat session in Firestore
+      const newSession = await createNewChatInFirestore();
+
+      if (newSession) {
+        // Set the new session as active
+        chatContext.setActiveSessionId(newSession.id);
+
+        // Close the history dropdown
+        setShowChatHistory(false);
+
+        // Focus the input field
+        setTimeout(() => {
+          inputRef.current?.focus();
+        }, 100);
+
+        Logger.log(`[ChatWindow] Created new chat with ID: ${newSession.id}`);
+      } else {
+        Logger.error("[ChatWindow] Failed to create new chat session");
+      }
     } catch (error) {
-      console.error("Error creating new chat:", error);
+      Logger.error("[ChatWindow] Error creating new chat:", error);
     }
   };
+
+
 
   // Select a chat session
   const selectChatSession = useCallback(async (sessionId: string) => {
@@ -937,23 +1137,41 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   }, [chatContext.activeSessionId, chatContext.setActiveSessionId]); // Dependencies
 
   // --- Sync local activeSession with context ID ---
+  // Replace your current sync effect with this improved version
   useEffect(() => {
-    const contextSessionId = chatContext.activeSessionId; // Read ID from context object
-    console.log(`[ChatWindow Sync Effect] Context ID: ${contextSessionId}, Local Active Session ID: ${activeSession?.id}`);
-    const sessionFromCache = chatSessions.find(s => s.id === contextSessionId);
-    if (sessionFromCache) {
-      if (activeSession?.id !== sessionFromCache.id) {
-        setActiveSession(sessionFromCache);
-        console.log(`[ChatWindow Sync Effect] Synced local activeSession state to context ID: ${contextSessionId}`);
-      }
-    } else if (contextSessionId && !loading) {
-      if (activeSession !== null) setActiveSession(null);
-      console.warn(`[ChatWindow Sync Effect] Context activeSessionId ${contextSessionId} not in cache.`);
-    } else if (!contextSessionId) {
-      if (activeSession !== null) setActiveSession(null);
-      console.log(`[ChatWindow Sync Effect] Cleared local activeSession state as context ID is null.`);
+    const contextSessionId = chatContext.activeSessionId;
+    console.log(`[ChatWindow Sync Effect] Context ID: ${contextSessionId}, Cached Sessions: ${chatSessions.length}`);
+
+    // If we have a session ID but no sessions yet (still loading), we'll wait
+    if (contextSessionId && chatSessions.length === 0 && loading) {
+      console.log('[ChatWindow Sync Effect] Sessions still loading, will sync later');
+      return;
     }
-  }, [chatContext.activeSessionId, chatSessions, loading, activeSession]); // Use context object field
+
+    if (contextSessionId) {
+      const sessionFromCache = chatSessions.find(s => s.id === contextSessionId);
+      if (sessionFromCache) {
+        console.log(`[ChatWindow Sync Effect] Found session in cache: ${sessionFromCache.title}`);
+        setActiveSession(sessionFromCache);
+      } else {
+        console.warn(`[ChatWindow Sync Effect] Session ID ${contextSessionId} not found in cache.`);
+        // If not in cache, but loading is done, create new or select first
+        if (!loading && chatSessions.length > 0) {
+          console.log('[ChatWindow Sync Effect] Setting first available session as active');
+          chatContext.setActiveSessionId(chatSessions[0].id);
+        }
+      }
+    } else {
+      // No active session
+      setActiveSession(null);
+
+      // If no active session, loading is done, and we have sessions, set first one
+      if (!loading && chatSessions.length > 0) {
+        console.log('[ChatWindow Sync Effect] No active session, setting first available');
+        chatContext.setActiveSessionId(chatSessions[0].id);
+      }
+    }
+  }, [chatContext.activeSessionId, chatSessions, loading]);
 
 
   // Read file as data URL
@@ -993,7 +1211,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     if (mentionStartPos < 0) return;
 
     const beforeMention = newMessage.substring(0, mentionStartPos);
-    const afterMention = newMessage.substring(mentionStartPos);
+    const afterMention = newMessage.substring(mentionStartPos + 1);
 
     // Replace the "@..." part with the selected mention
     const textWithoutMentionChar = afterMention.substring(afterMention.indexOf('@') + 1);
@@ -1002,7 +1220,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       : '';
 
     // Update the message with the mention syntax
-    setNewMessage(`${beforeMention}@[${mention.name}](${mention.id}) ${remainingText}`);
+    setNewMessage(`${beforeMention}@[${mention.name}](${mention.id})${remainingText}`);
 
     // Hide the mention list
     setShowMentionList(false);
@@ -1144,8 +1362,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
 
   // Send a message to the active chat session
-  // In components/ChatWindow.tsx - Update handleSendMessage method
-  // In components/ChatWindow.tsx - Update handleSendMessage method
   const handleSendMessage = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     console.log('[handleSendMessage] === Function Start ===');
@@ -1183,14 +1399,14 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     }
     // --- End Guard Clauses ---
 
-
     const messageToSend = newMessage;
     const filesToSend = [...attachedFiles]; // Capture state before clearing
 
     // --- Optimistic UI Update ---
     setNewMessage('');
     setAttachedFiles([]);
-    console.log('[handleSendMessage] Input state cleared.');
+    setIsThinking(true); // START THINKING INDICATOR
+    console.log('[handleSendMessage] Input state cleared. Thinking indicator started.');
 
     const { mentions: parsedMentionsForOptimistic } = parseMentions(messageToSend); // Parse for optimistic display
     const tempUserMessage: ChatMessage = {
@@ -1198,13 +1414,21 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       sender: 'You',
       content: messageToSend,
       timestamp: new Date(), // Client time
-      attachments: filesToSend.map(f => ({ // Basic info for display
+      attachments: filesToSend.map(f => ({
         id: f.id, name: f.name, type: f.type, url: f.url
       })),
       mentions: parsedMentionsForOptimistic,
       isError: false,
     };
-    setChatMessages(prevMessages => [...prevMessages, tempUserMessage]); // Add to UI state
+
+    // Add user message to state immediately
+    setChatMessages(prevMessages => [...prevMessages, tempUserMessage]);
+
+    // Scroll to bottom to show the new message
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+
     console.log('[handleSendMessage] Optimistically added user message to UI.');
     // --- END OPTIMISTIC UI UPDATE ---
 
@@ -1212,7 +1436,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       console.log('[handleSendMessage] Preparing message data for service...');
 
       // 1. Parse Mentions (for service)
-      // We re-use the function, it's cheap
       const { text: cleanText, mentions } = parseMentions(messageToSend);
       console.log(`[handleSendMessage] Mentions parsed for service. Count: ${mentions.length}`);
 
@@ -1221,11 +1444,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         id: file.id,
         name: file.name,
         type: file.type,
-        url: file.url, // <-- Make sure this uses the URL from the attachedFiles state
+        url: file.url, // Ensure this uses the URL from the attachedFiles state
         size: file.size,
         // content: file.content // Only if needed by LLM explicitly
       }));
-
       console.log(`[handleSendMessage] Attachment data prepared for service. Count: ${attachmentData.length}`);
 
       // 3. Prepare Current File Data
@@ -1244,7 +1466,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           const results = await Promise.all(
             mentions.filter(mention => mention.id !== currentFileId) // Avoid re-fetching current file
               .map(async (mention) => {
-                const fileContent = await getFileContent(mention.id); // Use the memoized helper
+                const fileContent = await getFileContent(mention.id); // Using the memoized helper
                 if (fileContent === null) {
                   console.warn(`[handleSendMessage] Content fetch failed for mentioned file: ${mention.name} (${mention.id})`);
                   return null;
@@ -1257,26 +1479,108 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         } catch (fetchError) {
           console.error("[handleSendMessage] Error fetching mentioned file content:", fetchError);
           alert("Warning: Error fetching content for mentioned files. Sending message without full context.");
-          // Continue without full context, or you could return here if context is critical
+          // Continue without full context, or return if context is critical
+        }
+      }
+      // threshold in bytes (here 500 KB)
+      const MAX_IMAGE_BYTES = 500 * 1024;
+      for (const file of validMentionedFiles) {
+        if (/\.(jpe?g|png|gif|bmp|webp)$/i.test(file.name) && file.content.startsWith('data:image')) {
+          let imageUrl = file.content;
+          try {
+            // estimate raw bytes of the base64 payload
+            const base64 = imageUrl.split(',')[1] || '';
+            const byteLength = Math.floor(base64.length * 3 / 4);
+            if (byteLength > MAX_IMAGE_BYTES) {
+              console.log(`[handleSendMessage] Compressing large image '${file.name}' (${Math.round(byteLength / 1024)} KB)`);
+              // compressDataUrl defaults: quality 0.7, maxWidth 800
+              imageUrl = await compressDataUrl(imageUrl);
+              console.log(`[handleSendMessage] Compressed image '${file.name}', new size approx. ${Math.round((imageUrl.split(',')[1].length * 3 / 4) / 1024)} KB`);
+            }
+          } catch (err) {
+            console.error(`[handleSendMessage] Image compression failed for ${file.name}:`, err);
+            // fallback to original data URL
+          }
+
+          attachmentData.push({
+            id: file.id,
+            name: file.name,
+            type: `image/${file.name.split('.').pop()}`,
+            url: imageUrl
+          });
+          console.log(`[handleSendMessage] Added mentioned image '${file.name}' as attachment.`);
         }
       }
 
+
+      // 5. Determine if any mentioned file is an image or a .tex file
+      // Use validMentionedFiles to decide which model to use.
+      let hasImageMention = false;
+      let hasTexMention = false;
+      validMentionedFiles.forEach(file => {
+        const lowerName = file.name.toLowerCase();
+        if (lowerName.endsWith('.tex')) {
+          hasTexMention = true;
+        } else if (lowerName.match(/\.(jpeg|jpg|png|gif|bmp|webp)$/)) {
+          hasImageMention = true;
+        }
+      });
+
+      // 6. Decide on the model override based on mentioned file types.
+      // Start with the model from activeSession or default to 'gpt-4o'.
+      let modelToUse = activeSession?.currentModel?.id || 'gpt-4o';
+      if (hasImageMention) {
+        modelToUse = 'gpt-4o'; // Vision-capable model.
+        console.log(`[handleSendMessage] Overriding model to vision model due to image mention.`);
+      } else if (hasTexMention) {
+        modelToUse = 'gpt-4-turbo'; // Text-focused model using detailed .tex context.
+        console.log(`[handleSendMessage] Overriding model to text model due to .tex file mention.`);
+      }
+
       // --- Send to Service ---
-      const serviceParams: any = { // Use 'any' temporarily if SendMessageParams is strict
-        content: cleanText, // The text part of the user message
+      const serviceParams: any = {
+        content: cleanText,
         projectId,
-        sessionId: currentContextSessionId, // Use the validated ID from context
+        sessionId: currentContextSessionId,
         userId,
         userName: 'You',
-        model: activeSession?.currentModel?.id || 'gpt-4o', // Use selected model or default
+        model: modelToUse,
         currentFile: currentFileData,
         mentionedFiles: validMentionedFiles,
-        attachments: attachmentData, // <-- *** ADDED THIS LINE *** Pass the prepared attachment data
+        attachments: attachmentData,
+        projectFiles: projectFiles // Pass the complete project file tree
       };
+
       console.log('[handleSendMessage] Calling chatService.sendMessage with sessionId:', serviceParams.sessionId);
 
       const response = await chatService.sendMessage(serviceParams);
       console.log('[handleSendMessage] chatService response received:', response);
+      setIsThinking(false); // STOP THINKING INDICATOR AFTER RESPONSE
+
+      if ((sessionTitle === 'New Chat' || sessionTitle === 'Untitled Chat') && messageToSend) {
+        try {
+          const resp = await fetch('/api/generateTitle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: messageToSend })
+          });
+          const { title } = await resp.json();
+          // write back to Firestore
+          const sessionRef = doc(db, 'chatSessions', currentContextSessionId!);
+          await updateDoc(sessionRef, { title, lastUpdated: serverTimestamp() });
+          setSessionTitle(title);
+        } catch (err) {
+          console.error('Could not auto‑generate title:', err);
+        }
+      }
+
+      if (!response.error) {
+        // only run once, if this session is brand‑new
+        if (sessionTitle === 'New Chat' || sessionTitle === 'Untitled Chat') {
+          autoGenerateTitle(currentContextSessionId!, messageToSend);
+        }
+      }
+      
 
       // --- Handle Service Response ---
       if (response.error) {
@@ -1291,9 +1595,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
     } catch (error) {
       console.error("[handleSendMessage] CRITICAL UNEXPECTED ERROR:", error);
-      alert(`An critical error occurred while sending the message: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      alert(`A critical error occurred while sending the message: ${error instanceof Error ? error.message : 'Unknown error'}`);
       // Remove the optimistic message on critical error
       setChatMessages(prev => prev.filter(msg => msg.id !== tempUserMessage.id));
+      setIsThinking(false); // STOP THINKING INDICATOR ON ERROR
     } finally {
       console.log('[handleSendMessage] === Function End ===');
     }
@@ -1301,21 +1606,23 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     // Dependencies
     newMessage,
     attachedFiles,
-    contextActiveSessionId, // Use context value
+    chatContext.activeSessionId,
     projectId,
     userId,
-    loading, // Include loading state
+    loading,
     currentFileId,
     currentFileName,
     currentFileContent,
-    projectFiles, // Needed for parsing mentions
-    activeSession, // Needed for selected model ID
+    projectFiles,
+    activeSession,
     setNewMessage,
     setAttachedFiles,
-    parseMentions, // Local memoized function
-    getFileContent, // Local memoized function
-    setChatMessages // Needed for optimistic update and error rollback
+    parseMentions,
+    getFileContent,
+    setChatMessages,
+    setIsThinking
   ]);
+
 
 
   // Optimized panel resize handler using requestAnimationFrame
@@ -1561,13 +1868,16 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
   // --- FIX: SCROLLING EFFECT ---
   useEffect(() => {
-    if (!loading && messagesEndRef.current) { // Check loading state too
-      // Use requestAnimationFrame for potentially smoother scroll after render
+    if (!loading && messagesEndRef.current) {
+      // Use requestAnimationFrame for smoother scroll after render
       requestAnimationFrame(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+        messagesEndRef.current?.scrollIntoView({
+          behavior: chatMessages.length <= 1 ? "auto" : "smooth",
+          block: "end"
+        });
       });
     }
-  }, [chatMessages, loading]); // <-- DEPEND ON chatMessages and loading
+  }, [chatMessages, loading, isThinking]); // Depend on messages, loading, and thinking state
 
   // Safe file icon getter
   const getFileIcon = (fileType: string) => {
@@ -1600,10 +1910,32 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         {/* Header - CHAT title and Actions */}
         <div className="flex items-center justify-between border-b border-gray-800">
           {/* Chat title - just the CHAT heading */}
-          <div className="flex text-xs text-white">
-            <div className="px-4 py-1.5 uppercase border-b-2 border-white">
-              CHAT
-            </div>
+          <div className="flex items-center">
+            {editingTitle ? (
+              <input
+                type="text"
+                value={sessionTitle}
+                onChange={e => setSessionTitle(e.target.value)}
+                onBlur={saveSessionTitle}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') saveSessionTitle();
+                  if (e.key === 'Escape') {
+                    setSessionTitle(activeSession?.title || '');
+                    setEditingTitle(false);
+                  }
+                }}
+                autoFocus
+                className="bg-transparent border-b border-blue-400 text-white px-2 py-1 text-sm focus:outline-none"
+              />
+            ) : (
+              <h2
+                className="text-white text-sm font-medium cursor-pointer px-2 py-1"
+                onClick={() => setEditingTitle(true)}
+                title="Click to rename chat"
+              >
+                {sessionTitle || 'Untitled Chat'}
+              </h2>
+            )}
           </div>
 
           {/* Action buttons */}
@@ -1628,21 +1960,51 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
               {/* Chat History Dropdown */}
               {showChatHistory && (
-                <div className="absolute right-0 top-full mt-1 bg-[#252526] border border-[#3c3c3c] rounded-md shadow-lg z-20 w-64">
-                  <div className="py-1 max-h-80 overflow-y-auto">
-                    <div className="px-3 py-2 text-xs text-gray-400 uppercase">Recent chats</div>
-                    {chatSessions.map(session => (
-                      <button
-                        key={session.id}
-                        onClick={() => selectChatSession(session.id)}
-                        className={`w-full text-left px-3 py-2 text-sm flex items-center ${activeSessionId === session.id
-                          ? 'bg-[#04395e] text-white'
-                          : 'text-gray-300 hover:bg-[#2a2d2e]'
-                          }`}
-                      >
-                        <span className="truncate">{session.title || 'New Chat'}</span>
-                      </button>
-                    ))}
+                <div className="absolute right-0 top-full mt-1 bg-[#252526] border border-[#3c3c3c] rounded-md shadow-lg z-20 w-72">
+                  <div className="py-1.5 px-3 border-b border-gray-700/50 flex items-center justify-between">
+                    <span className="text-xs text-gray-400 uppercase font-medium">Recent Chats</span>
+                    <button
+                      onClick={createNewChat}
+                      className="text-blue-400 hover:text-blue-300 text-xs flex items-center"
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1.5" />
+                      New Chat
+                    </button>
+                  </div>
+
+                  <div className="max-h-80 overflow-y-auto py-1">
+                    {chatSessions.length === 0 ? (
+                      <div className="px-3 py-4 text-sm text-gray-400 text-center">
+                        No chat sessions yet. Start a new chat!
+                      </div>
+                    ) : (
+                      chatSessions.map(session => (
+                        <button
+                          key={session.id}
+                          onClick={() => selectChatSession(session.id)}
+                          className={`w-full text-left px-3 py-2 text-sm flex items-center ${chatContext.activeSessionId === session.id
+                            ? 'bg-[#04395e] text-white'
+                            : 'text-gray-300 hover:bg-[#2a2d2e]'
+                            }`}
+                        >
+                          <MessageSquare className={`h-4 w-4 flex-shrink-0 mr-2 ${chatContext.activeSessionId === session.id ? 'text-white' : 'text-gray-500'
+                            }`} />
+                          <div className="flex-1 flex justify-between items-center min-w-0 space-x-2">
+                            <span className="truncate font-medium">
+                              {session.title && session.title !== "New Chat"
+                                ? session.title
+                                : "Untitled Chat"}
+                            </span>
+                            {session.timestamp && (
+                              <span className={`text-xs whitespace-nowrap ${chatContext.activeSessionId === session.id ? 'text-blue-200' : 'text-gray-500'
+                                }`}>
+                                {formatTime(session.timestamp)}
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      ))
+                    )}
                   </div>
                 </div>
               )}
@@ -1681,46 +2043,14 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               </div>
             )}
 
-            {/* Empty State (when no messages) */}
-            {messages.length === 0 && (
-              <div className="flex-1 flex flex-col items-center justify-center p-6 text-center overflow-y-auto">
-                <div className="mb-4 bg-gray-700 rounded-full p-4 opacity-60">
-                  <div className="w-16 h-16 flex items-center justify-center">
-                    <MessageSquare className="h-10 w-10 text-white opacity-70" />
-                  </div>
-                </div>
-                <h2 className="text-2xl font-light text-gray-300 mb-2">LaTeX Assistant</h2>
-                <p className="text-gray-400 text-sm max-w-xs">
-                  Ask me anything about LaTeX. I can help format equations, create tables,
-                  fix errors, and suggest improvements for your document.
-                </p>
-
-                <div className="mt-10 flex flex-col space-y-4 text-sm w-full max-w-xs opacity-80">
-                  <div className="flex items-center text-blue-400">
-                    <span className="mr-2 font-mono">@</span>
-                    <span>Type @ to reference project files</span>
-                  </div>
-                  <div className="flex items-center text-blue-400">
-                    <Paperclip className="h-4 w-4 mr-2 opacity-70" />
-                    <span>Attach images or files for help</span>
-                  </div>
-                  <div className="flex items-center text-blue-400">
-                    <span className="mr-2 font-mono">/</span>
-                    <span>Type / to use commands</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
             {/* Messages (when there are messages) */}
-            {messages.length > 0 && (
+            {!loading && chatMessages.length > 0 && (
               // Make sure this container scrolls, not the whole chat window if possible
               <div className="flex-1 overflow-y-auto p-3 space-y-4 messages-container">
                 {chatMessages.map((msg) => {
-                  // ***** FIX: DEFINE VARIABLES HERE for each message *****
+                  // Define variables for each message
                   const isAssistant = msg.sender !== 'You' && msg.sender !== 'System';
                   const hasDiffs = isAssistant && msg.diffHunks && msg.diffHunks.length > 0 && !msg.isError;
-                  // ***** END FIX *****
 
                   return (
                     // Use msg.id for the key
@@ -1755,11 +2085,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                       </div>
 
                       {/* Suggestion Button - Rendered below the message bubble */}
-                      {/* Use the defined variables 'hasSuggestions' and 'suggestionData' */}
                       {hasDiffs && (
                         <div className="mt-1.5">
                           <button
-                            onClick={() => { // Directly call onShowSuggestion here
+                            onClick={() => {
                               console.log("[View Suggestion Click] Button clicked for message:", msg.id);
                               // Ensure original content is available
                               if (typeof currentFileContent !== 'string') {
@@ -1776,7 +2105,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                                 );
                               } else {
                                 console.error("onShowSuggestion callback or msg.diffHunks is missing!");
-
                               }
                             }}
                             className="bg-blue-600/80 text-white text-xs py-1 px-2 rounded hover:bg-blue-700 flex items-center shadow"
@@ -1791,15 +2119,58 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                       <div className="text-[10px] text-gray-500 mt-1 px-1">
                         {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </div>
-
-                      {/* REMOVED the old conflicting Apply/Ignore buttons that called /api/latex-content */}
-
                     </div> // End message container div
                   );
                 })}
-                <div ref={messagesEndRef} className="h-0" /> {/* Scroll anchor */}
+                {isThinking && <ThinkingIndicator />}
+                <div ref={messagesEndRef} className="h-0" />
               </div> // End messages container div
             )}
+            {/* Empty State (when no messages) */}
+            {!loading && chatMessages.length === 0 && (
+              <div className="flex-1 flex flex-col items-center justify-center p-6 text-center overflow-y-auto">
+                <div className="mb-4 bg-gray-700 rounded-full p-4 opacity-60">
+                  <div className="w-16 h-16 flex items-center justify-center">
+                    <MessageSquare className="h-10 w-10 text-white opacity-70" />
+                  </div>
+                </div>
+                <h2 className="text-2xl font-light text-gray-300 mb-2">LaTeX Assistant</h2>
+                <p className="text-gray-400 text-sm max-w-xs mb-6">
+                  Ask me anything about LaTeX. I can help format equations, create tables,
+                  fix errors, and suggest improvements for your document.
+                </p>
+
+                <div className="bg-gray-800/40 rounded-lg p-5 max-w-xs w-full">
+                  <h3 className="text-sm font-medium text-gray-300 mb-3">Example questions to ask:</h3>
+                  <ul className="space-y-2 text-sm text-left text-gray-400">
+                    <li className="cursor-pointer hover:text-blue-400 transition-colors"
+                      onClick={() => setNewMessage("How do I create a matrix equation in LaTeX?")}>
+                      • How do I create a matrix equation?
+                    </li>
+                    <li className="cursor-pointer hover:text-blue-400 transition-colors"
+                      onClick={() => setNewMessage("What's the syntax for adding citations and references?")}>
+                      • How do I add citations and references?
+                    </li>
+                    <li className="cursor-pointer hover:text-blue-400 transition-colors"
+                      onClick={() => setNewMessage("Can you help me debug this error: Undefined control sequence")}>
+                      • Help me debug a LaTeX error
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="mt-8 flex flex-col space-y-3 text-sm w-full max-w-xs opacity-80">
+                  <div className="flex items-center text-blue-400">
+                    <span className="mr-2 font-mono">@</span>
+                    <span>Type @ to reference project files</span>
+                  </div>
+                  <div className="flex items-center text-blue-400">
+                    <Paperclip className="h-4 w-4 mr-2 opacity-70" />
+                    <span>Attach images or files for help</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
           </div> // End Chat Content Area Div
         )}
 
@@ -1978,7 +2349,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                     >
                       <Send className="h-5 w-5" />
                     </button>
-                    {/* ... */}
                   </div>
                 </div>
               </form>

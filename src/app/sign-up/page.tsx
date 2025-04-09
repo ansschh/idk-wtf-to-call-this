@@ -24,7 +24,7 @@ export default function SignUpPage() {
               routing="path" 
               path="/sign-up" 
               signInUrl="/sign-in"
-              redirectUrl="/editor"
+              redirectUrl="/dashboard"
               appearance={{
                 elements: {
                   rootBox: "w-full",

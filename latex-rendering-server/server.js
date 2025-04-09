@@ -5,18 +5,53 @@ const tmp = require('tmp');
 const fs = require('fs-extra');
 const path = require('path');
 const cors = require('cors');
+const os = require('os');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+
+// Platform-specific configurations
+const isWindows = os.platform() === 'win32';
+const isMac = os.platform() === 'darwin';
+const isLinux = os.platform() === 'linux';
+
+// Determine LaTeX executable path based on platform
+let pdflatexPath;
+if (isWindows) {
+  pdflatexPath = '"C:\\Program Files\\MiKTeX\\miktex\\bin\\x64\\pdflatex.exe"';
+} else if (isMac) {
+  pdflatexPath = '/Library/TeX/texbin/pdflatex';
+} else {
+  // Linux - assume installed via texlive
+  pdflatexPath = '/usr/bin/pdflatex';
+}
+
+// Config based on environment
+const corsOrigins =
+  NODE_ENV === 'production'
+    ? process.env.ALLOWED_ORIGINS?.split(',') || ['https://yourdomain.com']
+    : ['http://localhost:3000'];
 
 // Configure middleware
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGIN || 'http://localhost:3000',
+  origin: corsOrigins,
   methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key']
 }));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Simple API key middleware for security
+const API_KEY = process.env.API_KEY;
+const apiKeyMiddleware = (req, res, next) => {
+  if (!API_KEY) return next();
+  const requestApiKey = req.headers['x-api-key'];
+  if (requestApiKey !== API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+};
 
 // Create a temporary directory for outputs
 const outputDir = path.join(__dirname, 'temp');
@@ -26,15 +61,12 @@ fs.ensureDirSync(outputDir);
 const cleanupTempFiles = () => {
   const oneHourAgo = new Date();
   oneHourAgo.setHours(oneHourAgo.getHours() - 1);
-  
   fs.readdir(outputDir, (err, files) => {
     if (err) return console.error('Error reading temp directory:', err);
-    
     files.forEach(file => {
       const filePath = path.join(outputDir, file);
       fs.stat(filePath, (statErr, stats) => {
         if (statErr) return console.error(`Error stating file ${file}:`, statErr);
-        
         if (stats.isFile() && stats.mtime < oneHourAgo) {
           fs.unlink(filePath, unlinkErr => {
             if (unlinkErr) console.error(`Error removing file ${file}:`, unlinkErr);
@@ -44,237 +76,189 @@ const cleanupTempFiles = () => {
     });
   });
 };
-
-// Schedule cleanup every hour
 setInterval(cleanupTempFiles, 60 * 60 * 1000);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', message: 'LaTeX rendering service is running' });
+  const healthInfo = {
+    status: 'ok',
+    message: 'LaTeX rendering service is running',
+    environment: NODE_ENV,
+    platform: os.platform(),
+    latexPath: pdflatexPath,
+    timestamp: new Date().toISOString()
+  };
+  res.json(healthInfo);
 });
 
-// Full document rendering endpoint
-app.post('/render', async (req, res) => {
-    const { latex, format = 'pdf', images = [] } = req.body;
-    
-    if (!latex) {
-      return res.status(400).json({ error: 'LaTeX content is required' });
-    }
-    
-    try {
-      // Create temporary directory for the job
-      const tmpDir = tmp.dirSync({ unsafeCleanup: true });
-      const inputFile = path.join(tmpDir.name, 'input.tex');
-      
-      console.log(`Created temporary directory: ${tmpDir.name}`);
-      console.log(`LaTeX content length: ${latex.length}`);
-      console.log(`Received ${images.length} images`);
-      
-      // Create an images subfolder to keep things organized
-      const imagesDir = path.join(tmpDir.name, 'images');
-      fs.mkdirSync(imagesDir, { recursive: true });
-      
-      // Process images first (if provided)
-      if (images && images.length > 0) {
-        console.log(`Processing ${images.length} images`);
-        
-        for (const image of images) {
-          try {
-            if (image.name && image.data) {
-              // Save image both to the root directory AND the images subdirectory
-              // This gives LaTeX multiple places to find the images
-              const mainPath = path.join(tmpDir.name, image.name);
-              const imagePath = path.join(imagesDir, image.name);
-              
-              // Ensure image data is base64
-              let imageData;
-              if (image.data.startsWith('data:')) {
-                // Extract base64 from data URL
-                const matches = image.data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-                if (matches && matches.length === 3) {
-                  imageData = Buffer.from(matches[2], 'base64');
-                } else {
-                  throw new Error("Invalid data URL format");
-                }
-              } else {
-                // Assume it's already base64
-                imageData = Buffer.from(image.data, 'base64');
-              }
-              
-              // Write to both locations
-              fs.writeFileSync(mainPath, imageData);
-              fs.writeFileSync(imagePath, imageData);
-              
-              console.log(`Saved image ${image.name} to multiple locations (${imageData.length} bytes)`);
-              console.log(`- ${mainPath}`);
-              console.log(`- ${imagePath}`);
-              
-              // Verify the files were created
-              if (fs.existsSync(mainPath)) {
-                const stats = fs.statSync(mainPath);
-                console.log(`Main file exists with size: ${stats.size} bytes`);
-              }
-              
-              if (fs.existsSync(imagePath)) {
-                const stats = fs.statSync(imagePath);
-                console.log(`Image dir file exists with size: ${stats.size} bytes`);
-              }
-            } else {
-              console.log(`Missing name or data for image`);
-            }
-          } catch (imgError) {
-            console.error(`Error processing image ${image?.name}:`, imgError);
-          }
-        }
-      }
-      
-      // Modify LaTeX content to include multiple graphicspath options
-      let processedLaTeX = latex;
-      
-      // Add graphicspath if it doesn't exist
-      if (!processedLaTeX.includes('\\graphicspath')) {
-        // Create a graphicspath command that includes multiple possible locations
-        const graphicsPathCmd = '\\graphicspath{{./}{./images/}{.}}\n';
-        
-        // Add after documentclass and packages but before begin document
-        if (processedLaTeX.includes('\\begin{document}')) {
-          processedLaTeX = processedLaTeX.replace(
-            /(\\begin\{document\})/,
-            `${graphicsPathCmd}$1`
-          );
-        } else {
-          // If no begin document, add at the beginning
-          processedLaTeX = graphicsPathCmd + processedLaTeX;
-        }
-        
-        console.log("Added graphicspath command to LaTeX");
-      }
-      
-      // Write LaTeX content to file
-      fs.writeFileSync(inputFile, processedLaTeX);
-      console.log(`LaTeX content written to ${inputFile}`);
-      
-      // Check that all files are in place
-      console.log('Files in temp directory:');
-      listFilesRecursively(tmpDir.name);
-      
-      // Run pdfLaTeX to generate PDF
-      const pdfLatexCmd = `"C:\\Program Files\\MiKTeX\\miktex\\bin\\x64\\pdflatex.exe" -interaction=nonstopmode -halt-on-error -output-directory="${tmpDir.name}" "${inputFile}"`;
-      
-      // Create environment for MiKTeX to avoid privilege issues
-      const pdfLatexEnv = {
-        ...process.env,
-        MIKTEX_USERCONFIG: path.resolve(process.env.USERPROFILE || process.env.HOME, '.miktex'),
-        TEXMFVAR: path.resolve(process.env.USERPROFILE || process.env.HOME, '.miktex')
-      };
-      
-      console.log("Running LaTeX command:", pdfLatexCmd);
-      
-      // Run pdfLaTeX TWICE to ensure proper references
-      exec(pdfLatexCmd, { env: pdfLatexEnv }, async (error, stdout, stderr) => {
-        console.log("First LaTeX run stdout:", stdout);
-        
-        // Even if the first run had errors, run it a second time
-        console.log("Running LaTeX command a second time");
-        
-        exec(pdfLatexCmd, { env: pdfLatexEnv }, async (error2, stdout2, stderr2) => {
-          if (error2) {
-            console.error(`Error executing pdflatex:`, error2.message);
-            
-            // Save the log file for debugging
-            if (fs.existsSync(path.join(tmpDir.name, 'input.log'))) {
-              const logContent = fs.readFileSync(path.join(tmpDir.name, 'input.log'), 'utf8');
-              const debugLogPath = path.join(outputDir, `latex-log-${Date.now()}.txt`);
-              fs.writeFileSync(debugLogPath, logContent);
-              console.log(`Saved LaTeX log to ${debugLogPath}`);
-            }
-            
-            // Extract error message
-            let errorMessage = 'LaTeX compilation failed';
-            const errorLog = fs.existsSync(path.join(tmpDir.name, 'input.log')) 
-              ? fs.readFileSync(path.join(tmpDir.name, 'input.log'), 'utf8')
-              : stderr2;
-            
-            const errorMatch = errorLog.match(/!(.*?)(?:\n|$)/);
-            if (errorMatch) {
-              errorMessage = errorMatch[1].trim();
-            }
-            
-            tmpDir.removeCallback();
-            return res.status(500).json({ error: errorMessage });
-          }
-          
-          const pdfPath = path.join(tmpDir.name, 'input.pdf');
-          
-          // If PDF format is requested, send the PDF
-          if (format === 'pdf') {
-            if (fs.existsSync(pdfPath)) {
-              const pdfData = fs.readFileSync(pdfPath);
-              const base64Pdf = pdfData.toString('base64');
-              
-              console.log(`Successfully generated PDF (${pdfData.length} bytes)`);
-              
-              // Clean up
-              tmpDir.removeCallback();
-              
-              return res.json({
-                format: 'pdf',
-                data: base64Pdf
-              });
-            } else {
-              console.error('PDF file not found at expected path');
-              
-              // List all files in the temp directory
-              console.log('Files in temp directory after compilation:');
-              listFilesRecursively(tmpDir.name);
-              
-              tmpDir.removeCallback();
-              return res.status(500).json({ error: 'PDF generation failed - output file not found' });
-            }
-          }
-          
-          // Clean up
-          tmpDir.removeCallback();
-          return res.status(400).json({ error: 'Unsupported output format' });
-        });
-      });
-    } catch (error) {
-      console.error(`Server error:`, error);
-      return res.status(500).json({ error: 'Server error' });
-    }
-  });
-  
-  // Helper function to list all files in a directory recursively
-  function listFilesRecursively(dir) {
-    const files = fs.readdirSync(dir);
-    
-    files.forEach(file => {
-      const filePath = path.join(dir, file);
-      const stats = fs.statSync(filePath);
-      
-      if (stats.isDirectory()) {
-        console.log(`[DIR] ${filePath}`);
-        listFilesRecursively(filePath);
-      } else {
-        console.log(`[FILE] ${filePath} (${stats.size} bytes)`);
-      }
-    });
-  }
+// Helper function to escape RegExp special characters in a string
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-// Math formula rendering endpoint
-app.post('/render-math', async (req, res) => {
-  const { latex, displayMode = false } = req.body;
-  
+// Full document rendering endpoint
+app.post('/render', apiKeyMiddleware, async (req, res) => {
+  console.log(`[${new Date().toISOString()}] Received rendering request`);
+  const { latex, format = 'pdf', images = [] } = req.body;
   if (!latex) {
-    return res.status(400).json({ error: 'LaTeX math content is required' });
+    return res.status(400).json({ error: 'LaTeX content is required' });
   }
-  
   try {
     // Create temporary directory for the job
     const tmpDir = tmp.dirSync({ unsafeCleanup: true });
     const inputFile = path.join(tmpDir.name, 'input.tex');
-    
-    // Create a complete LaTeX document with just the math formula
+    console.log(`Created temporary directory: ${tmpDir.name}`);
+    console.log(`LaTeX content length: ${latex.length}`);
+    console.log(`Received ${images.length} images`);
+    // Create an images subfolder
+    const imagesDir = path.join(tmpDir.name, 'images');
+    fs.mkdirSync(imagesDir, { recursive: true });
+    // Mapping between original image names and sanitized filenames
+    const imageNameMapping = {};
+    if (images && images.length > 0) {
+      console.log(`Processing ${images.length} images`);
+      for (const image of images) {
+        try {
+          if (image.name && image.data) {
+            const originalName = path.basename(image.name);
+            const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
+            imageNameMapping[originalName] = safeName;
+            const mainPath = path.join(tmpDir.name, safeName);
+            const imagePath = path.join(imagesDir, safeName);
+            let imageData;
+            if (typeof image.data === 'string' && image.data.startsWith('data:')) {
+              const matches = image.data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+              if (matches && matches.length === 3) {
+                imageData = Buffer.from(matches[2], 'base64');
+              } else {
+                throw new Error("Invalid data URL format");
+              }
+            } else if (typeof image.data === 'string') {
+              imageData = Buffer.from(image.data, 'base64');
+            } else {
+              throw new Error("Image data must be a string");
+            }
+            fs.writeFileSync(mainPath, imageData);
+            fs.writeFileSync(imagePath, imageData);
+            console.log(`Saved image ${safeName} (${imageData.length} bytes)`);
+          } else {
+            console.log(`Missing name or data for image`);
+          }
+        } catch (imgError) {
+          console.error(`Error processing image ${image?.name}:`, imgError);
+        }
+      }
+    }
+    // Inject graphicspath and add graphicx package if needed
+    let processedLaTeX = latex;
+    if (!processedLaTeX.includes('\\graphicspath')) {
+      const graphicsPathCmd = '\\graphicspath{{./}{./images/}{.}}\n';
+      if (processedLaTeX.includes('\\begin{document}')) {
+        processedLaTeX = processedLaTeX.replace(/(\\begin\{document\})/, `${graphicsPathCmd}$1`);
+      } else {
+        processedLaTeX = graphicsPathCmd + processedLaTeX;
+      }
+      console.log("Added graphicspath command to LaTeX");
+    }
+    if (!processedLaTeX.includes('\\usepackage{graphicx}') &&
+        !processedLaTeX.includes('\\usepackage[pdftex]{graphicx}')) {
+      if (processedLaTeX.includes('\\documentclass')) {
+        processedLaTeX = processedLaTeX.replace(/(\\documentclass.*?\})/, '$1\n\\usepackage[pdftex]{graphicx}');
+        console.log("Added graphicx package to LaTeX");
+      }
+    }
+    // Replace image references inside \includegraphics commands with sanitized filenames
+    processedLaTeX = processedLaTeX.replace(/\\includegraphics(\[.*?\])?\{([^}]+)\}/g, (match, options, filename) => {
+      const trimmed = filename.trim();
+      if (imageNameMapping[trimmed]) {
+        console.log(`Replaced image reference '${trimmed}' with '${imageNameMapping[trimmed]}'`);
+        return `\\includegraphics${options || ''}{${imageNameMapping[trimmed]}}`;
+      }
+      return match;
+    });
+    fs.writeFileSync(inputFile, processedLaTeX);
+    console.log(`LaTeX content written to ${inputFile}`);
+    const pdfLatexCmd = `${pdflatexPath} -interaction=nonstopmode -halt-on-error -output-directory="${tmpDir.name}" "${inputFile}"`;
+    console.log("Running LaTeX command:", pdfLatexCmd);
+    // Run pdflatex twice to resolve references
+    exec(pdfLatexCmd, async (error, stdout, stderr) => {
+      console.log("First LaTeX run completed");
+      console.log("Running LaTeX command a second time");
+      exec(pdfLatexCmd, async (error2, stdout2, stderr2) => {
+        if (error2) {
+          console.error(`Error executing pdflatex:`, error2.message);
+          const logPath = path.join(tmpDir.name, 'input.log');
+          if (fs.existsSync(logPath)) {
+            const logContent = fs.readFileSync(logPath, 'utf8');
+            const debugLogPath = path.join(outputDir, `latex-log-${Date.now()}.txt`);
+            fs.writeFileSync(debugLogPath, logContent);
+            console.log(`Saved LaTeX log to ${debugLogPath}`);
+          }
+          let errorMessage = 'LaTeX compilation failed';
+          const errorLog = fs.existsSync(path.join(tmpDir.name, 'input.log')) 
+            ? fs.readFileSync(path.join(tmpDir.name, 'input.log'), 'utf8')
+            : stderr2;
+          const errorMatch = errorLog.match(/!(.*?)(?:\n|$)/);
+          if (errorMatch) {
+            errorMessage = errorMatch[1].trim();
+          }
+          tmpDir.removeCallback();
+          // Return only the simplified error message to the client
+          return res.status(500).json({ error: errorMessage });
+        }
+        const pdfPath = path.join(tmpDir.name, 'input.pdf');
+        if (format === 'pdf') {
+          if (fs.existsSync(pdfPath)) {
+            const pdfData = fs.readFileSync(pdfPath);
+            const base64Pdf = pdfData.toString('base64');
+            console.log(`Successfully generated PDF (${pdfData.length} bytes)`);
+            tmpDir.removeCallback();
+            return res.json({
+              format: 'pdf',
+              data: base64Pdf
+            });
+          } else {
+            console.error('PDF file not found at expected path');
+            console.log('Files in temp directory after compilation:');
+            listFilesRecursively(tmpDir.name);
+            tmpDir.removeCallback();
+            return res.status(500).json({ error: 'PDF generation failed - output file not found' });
+          }
+        }
+        tmpDir.removeCallback();
+        return res.status(400).json({ error: 'Unsupported output format' });
+      });
+    });
+  } catch (error) {
+    console.error(`Server error:`, error);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Helper function to list all files in a directory recursively (for debugging)
+function listFilesRecursively(dir) {
+  const files = fs.readdirSync(dir);
+  files.forEach(file => {
+    const filePath = path.join(dir, file);
+    const stats = fs.statSync(filePath);
+    if (stats.isDirectory()) {
+      console.log(`[DIR] ${filePath}`);
+      listFilesRecursively(filePath);
+    } else {
+      console.log(`[FILE] ${filePath} (${stats.size} bytes)`);
+    }
+  });
+}
+
+// Math formula rendering endpoint
+app.post('/render-math', apiKeyMiddleware, async (req, res) => {
+  const { latex, displayMode = false } = req.body;
+  if (!latex) {
+    return res.status(400).json({ error: 'LaTeX math content is required' });
+  }
+  try {
+    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const inputFile = path.join(tmpDir.name, 'input.tex');
     const fullLatex = `
 \\documentclass{article}
 \\usepackage{amsmath,amssymb,amsfonts}
@@ -286,67 +270,38 @@ ${displayMode ? `\\begin{align*}${latex}\\end{align*}` : `$${latex}$`}
 \\end{preview}
 \\end{document}
 `;
-    
-    // Write LaTeX content to file
     fs.writeFileSync(inputFile, fullLatex);
-    
-    // Run pdfLaTeX to generate PDF with environment settings
-    const pdfLatexCmd = `"C:\\Program Files\\MiKTeX\\miktex\\bin\\x64\\pdflatex.exe" -interaction=nonstopmode -halt-on-error -output-directory="${tmpDir.name}" "${inputFile}"`;
-    
-    // Create environment for MiKTeX to avoid privilege issues
-    const pdfLatexEnv = {
-      ...process.env,
-      MIKTEX_USERCONFIG: path.resolve(process.env.USERPROFILE || process.env.HOME, '.miktex'),
-      TEXMFVAR: path.resolve(process.env.USERPROFILE || process.env.HOME, '.miktex')
-    };
-    
+    const pdfLatexCmd = `${pdflatexPath} -interaction=nonstopmode -halt-on-error -output-directory="${tmpDir.name}" "${inputFile}"`;
     console.log("Running LaTeX math command:", pdfLatexCmd);
-    
-    exec(pdfLatexCmd, { env: pdfLatexEnv }, async (error, stdout, stderr) => {
-      console.log("LaTeX math stdout:", stdout);
-      console.log("LaTeX math stderr:", stderr);
-      
+    exec(pdfLatexCmd, async (error, stdout, stderr) => {
       if (error) {
-        // Handle error
-        const errorLog = fs.existsSync(path.join(tmpDir.name, 'input.log')) 
+        const errorLog = fs.existsSync(path.join(tmpDir.name, 'input.log'))
           ? fs.readFileSync(path.join(tmpDir.name, 'input.log'), 'utf8')
           : stderr;
-        
         let errorMessage = 'LaTeX compilation failed';
         const errorMatch = errorLog.match(/!(.*?)(?:\n|$)/);
         if (errorMatch) {
           errorMessage = errorMatch[1].trim();
         }
-        
         tmpDir.removeCallback();
         return res.status(500).json({ error: errorMessage });
       }
-      
       const pdfPath = path.join(tmpDir.name, 'input.pdf');
       const outputPng = path.join(tmpDir.name, 'output.png');
-      
-      // Convert PDF to PNG with transparent background
-      const convertCmd = `magick convert -density 300 -background white -alpha remove "${pdfPath}" "${outputPng}"`;
-      
+      const convertCmd = isWindows
+        ? `magick convert -density 300 -background white -alpha remove "${pdfPath}" "${outputPng}"`
+        : `convert -density 300 -background white -alpha remove "${pdfPath}" "${outputPng}"`;
       console.log("Running ImageMagick math command:", convertCmd);
-      
       exec(convertCmd, (imgError, imgStdout, imgStderr) => {
-        console.log("ImageMagick math stdout:", imgStdout);
-        console.log("ImageMagick math stderr:", imgStderr);
-        
         if (imgError) {
           console.error(`Error converting PDF to image: ${imgError.message}`);
           tmpDir.removeCallback();
           return res.status(500).json({ error: 'Image conversion failed' });
         }
-        
         if (fs.existsSync(outputPng)) {
           const imgData = fs.readFileSync(outputPng);
           const base64Img = imgData.toString('base64');
-          
-          // Clean up
           tmpDir.removeCallback();
-          
           return res.json({
             format: 'png',
             data: base64Img
@@ -370,6 +325,10 @@ app.use((err, req, res, next) => {
 });
 
 // Start the server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`LaTeX rendering server running on port ${PORT}`);
+  console.log(`Environment: ${NODE_ENV}`);
+  console.log(`Detected platform: ${os.platform()}`);
+  console.log(`Using LaTeX executable: ${pdflatexPath}`);
+  console.log(`CORS origins: ${corsOrigins.join(', ')}`);
 });
