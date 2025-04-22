@@ -6,10 +6,16 @@ import { db, storage } from "@/lib/firebase";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { authenticateWithFirebase } from "@/lib/firebase-auth";
 import ChatWindow from './ChatWindow'; // Use the correct path
-import { EditorView } from '@codemirror/view';
 import ReactDOM from 'react-dom';
 import chatService from '@/services/chatService'; // Import chatService
 import { createPatch } from 'diff';
+import { basicSetup } from 'codemirror'
+import { keymap, EditorView } from '@codemirror/view'
+import { indentWithTab } from '@codemirror/commands'
+import { search } from '@codemirror/search';
+import { StreamLanguage } from '@codemirror/language'
+import ProjectFileTree from './ProjectFileTree';
+import { stex } from '@codemirror/legacy-modes/mode/stex'
 import { applyUnifiedDiffPatch } from '../utils/editorUtils';
 import { EditorState } from '@codemirror/state'; // Import EditorState if using onCreateEditor state
 import { applyMultipleUnifiedDiffPatches, applySearchReplaceBlocks, validateDiffHunks } from '../utils/editorUtils';
@@ -17,11 +23,10 @@ import {
   Loader, Save, Download, Play, Edit, Eye, Layout, Menu,
   FileText, Folder, FolderOpen, RefreshCw, ChevronLeft, ChevronRight, ChevronDown,
   MoreVertical, FilePlus, FolderPlus, File, MessageSquare,
-  X, Upload, FileUp, Trash, Plus, Edit2, Trash2, Copy
+  X, Upload, FileUp, Trash, Plus, Edit2, Trash2, Copy,
+  Home
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { StreamLanguage } from '@codemirror/language';
-import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { ChatProvider, useChat } from '../context/ChatContext';
 import ChatPanel from './ChatWindow';
 import HeaderChatButton from './HeaderChatButton';
@@ -32,6 +37,180 @@ import SuggestionOverlay from './SuggestionOverlay';
 import EnhancedSidebar from '../components/EnhancedSidebar';
 import EditableProjectName from '../components/EditableProjectName';
 import PdfViewer from "../components/PdfViewer";
+
+const editorExtensions = [
+  StreamLanguage.define(stex),
+  basicSetup,
+  keymap.of([indentWithTab]),
+  EditorView.lineWrapping,
+  search({ top: false }), // Keep search enabled
+  EditorView.theme({
+
+    // --- Existing Styles ---
+    "&": { height: "100%", fontSize: "14px" },
+    ".cm-content": { fontFamily: "monospace" },
+    ".cm-gutters": { backgroundColor: "#f3f4f6", borderRight: "1px solid #e5e7eb", color: "#6b7280" },
+    ".cm-activeLine": { backgroundColor: "rgba(239, 246, 255, 0.8)" },
+    ".cm-activeLineGutter": { backgroundColor: "rgba(219, 234, 254, 0.8)", fontWeight: "bold" },
+    ".cm-keyword": { color: "#1d4ed8", fontWeight: "bold" },
+    ".cm-comment": { color: "#15803d", fontStyle: "italic" },
+    ".cm-string": { color: "#b91c1c" },
+    ".cm-bracket": { color: "#374151", fontWeight: "bold" },
+    ".cm-tag": { color: "#be185d", fontWeight: "bold" },
+    ".cm-operator": { color: "#57534e" },
+    ".cm-number": { color: "#854d0e" },
+    ".cm-variableName": { color: "#047857" },
+    ".cm-m-stex.cm-keyword": { color: "#1d4ed8", fontWeight: "bold" },
+    ".cm-m-stex.cm-tag": { color: "#be185d", fontWeight: "bold" },
+    ".cm-m-stex.cm-bracket": { color: "#374151", fontWeight: "bold" },
+
+    // --- UPDATED: Search Panel Styles ---
+    ".cm-search": {
+        backgroundColor: "#ffffff",
+        borderTop: "1px solid #e5e7eb",
+        padding: "8px 12px", // Slightly more padding
+        display: "flex",
+        alignItems: "center",
+        gap: "10px", // Increased gap
+        color: "#374151",
+        flexWrap: "wrap",
+        minHeight: "42px", // Adjusted height
+    },
+     ".cm-search > .cm-textfield": {
+       flexGrow: 1,
+       flexShrink: 1,
+       minWidth: '120px',
+     },
+     ".cm-search > label": {
+        fontSize: "0.875rem",
+        marginRight: "4px",
+        whiteSpace: 'nowrap',
+        flexShrink: 0,
+     },
+    ".cm-textfield": { // Inputs
+        backgroundColor: "#ffffff", // White background
+        border: "1px solid #d1d5db", // border-gray-300
+        borderRadius: "0.375rem", // rounded-md
+        padding: "6px 10px", // Adjusted padding
+        fontSize: "0.875rem",
+        color: "#111827",
+        height: "34px", // Set explicit height
+        boxSizing: 'border-box',
+    },
+    ".cm-textfield:focus": {
+        borderColor: "#2563eb", // border-blue-600
+        boxShadow: "0 0 0 2px rgba(59, 130, 246, 0.3)", // ring-2 ring-blue-300/30
+        outline: "none",
+    },
+
+     // --- UPDATED: Materialistic Button Styles ---
+    ".cm-button": {
+        backgroundColor: "#ffffff", // White background
+        color: "#374151", // text-gray-700 - Default text
+        border: "1px solid #d1d5db", // border-gray-300
+        borderRadius: "0.375rem", // rounded-md
+        padding: "0 12px", // Horizontal padding
+        fontSize: "0.875rem", // text-sm
+        fontWeight: "500", // font-medium
+        cursor: "pointer",
+        transition: "background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease",
+        marginLeft: "4px",
+        height: "34px", // Match input height
+        boxSizing: 'border-box',
+        display: 'inline-flex', // Align icon/text if needed
+        alignItems: 'center', // Align icon/text if needed
+        justifyContent: 'center', // Center content
+        flexShrink: 0,
+        whiteSpace: 'nowrap',
+        userSelect: 'none', // Prevent text selection on click
+        boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.03), 0 1px 1px 0 rgba(0,0,0,0.03)", // Subtle shadow
+    },
+    ".cm-button:hover": {
+        backgroundColor: "#f9fafb", // bg-gray-50 - Subtle hover
+        borderColor: "#adb5bd", // Slightly darker border
+        color: "#1f2937", // text-gray-800
+    },
+    ".cm-button:active": {
+        backgroundColor: "#f3f4f6", // bg-gray-100 - Pressed state
+        boxShadow: "inset 0 1px 2px 0 rgba(0, 0, 0, 0.05)", // Inset shadow when pressed
+    },
+    ".cm-button:focus-visible": { // Keyboard focus indication
+        outline: 'none',
+        borderColor: "#2563eb", // border-blue-600
+        boxShadow: "0 0 0 2px rgba(59, 130, 246, 0.3)", // Ring effect
+    },
+    ".cm-button:disabled": {
+        backgroundColor: "#f3f4f6", // bg-gray-100
+        color: "#9ca3af", // text-gray-400
+        borderColor: "#e5e7eb", // border-gray-200
+        cursor: "not-allowed",
+        boxShadow: 'none',
+        opacity: 0.7,
+    },
+     // Group for checkboxes
+     ".cm-search > div:has(input[type=checkbox])": {
+       display: 'flex',
+       alignItems: 'center',
+       gap: '10px', // Space between checkboxes
+       marginLeft: 'auto', // Push checkboxes towards the right (if space allows)
+       flexWrap: 'nowrap', // Prevent checkboxes themselves wrapping individually
+       flexShrink: 0,
+     },
+    ".cm-search label": { // General label styling (includes checkbox labels)
+       display: 'flex',
+       alignItems: 'center',
+       fontSize: "0.8rem",
+       cursor: 'pointer',
+       userSelect: 'none',
+       color: '#4b5563',
+       whiteSpace: 'nowrap',
+    },
+     ".cm-search input[type=checkbox]": {
+       marginRight: '4px',
+       height: '14px',
+       width: '14px',
+       cursor: 'pointer',
+       appearance: 'none',
+       border: '1px solid #d1d5db',
+       borderRadius: '3px',
+       verticalAlign: 'middle', // Align checkbox better with text
+       position: 'relative', // Needed for custom checkmark
+       top: '-1px', // Fine-tune vertical alignment
+     },
+     ".cm-search input[type=checkbox]:checked": {
+        backgroundColor: '#2563eb',
+        borderColor: '#2563eb',
+        backgroundImage: `url("data:image/svg+xml,%3csvg viewBox='0 0 16 16' fill='white' xmlns='http://www.w3.org/2000/svg'%3e%3cpath d='M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z'/%3e%3c/svg%3e")`,
+        backgroundSize: '100% 100%',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+     },
+     ".cm-search input[type=checkbox]:focus": {
+        outline: 'none',
+        boxShadow: "0 0 0 2px rgba(59, 130, 246, 0.4)", // Focus ring like Tailwind
+     },
+    ".cm-search-match": {
+        backgroundColor: "rgba(253, 224, 71, 0.4)" // bg-yellow-200/40 more visible yellow
+     },
+      ".cm-search-match-selected": {
+        backgroundColor: "rgba(249, 115, 22, 0.5)" // bg-orange-500/50 more visible orange
+     },
+     // Close button specific styling if needed
+     ".cm-search > button[name='close']": {
+         marginLeft: 'auto', // Push close button to the far right
+         padding: '5px', // Make it smaller padding
+         border: 'none',
+         background: 'transparent',
+         boxShadow: 'none',
+         color: '#6b7280', // text-gray-500
+     },
+     ".cm-search > button[name='close']:hover": {
+         background: '#f3f4f6', // bg-gray-100
+         color: '#1f2937', // text-gray-800
+     }
+
+  })
+];
 
 // Define types for the internal file structure
 interface FileTreeItem {
@@ -441,6 +620,8 @@ const renderTextWithMentions = (text, mentions = [], onFileSelect = null) => {
   );
 };
 
+
+
 // Interface for the EnhancedLatexEditor component
 interface EnhancedLatexEditorProps {
   projectId: string;
@@ -462,10 +643,11 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [projectData, setProjectData] = useState(null);
-  const [files, setFiles] = useState([]);
+  const [projectData, setProjectData] = useState<any>(null);
+  const [files, setFiles] = useState<FileTreeItem[]>([]);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [viewMode, setViewMode] = useState("split");
+  const [isSidebarVisible, setIsSidebarVisible] = useState(true);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
   const [editedProjectName, setEditedProjectName] = useState("");
   const [isCompiling, setIsCompiling] = useState(false);
@@ -480,6 +662,8 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   const [contextMenu, setContextMenu] = useState(null);
   const [originalContentForDiff, setOriginalContentForDiff] = useState<string>('');
   const { activeSessionId } = useChat();
+  const [renamingItem, setRenamingItem] = useState<{ id: string | null; name: string }>({ id: null, name: "" });
+  const renameInputRef = useRef<HTMLInputElement>(null); // Ref for the input field
 
 
   const [chatMessages, setChatMessages] = useState<any[]>([]); // Assuming ChatWindow needs this for context history
@@ -499,7 +683,7 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   } | null>(null);
   const [chatFileList, setChatFileList] = useState([]);
   const containerRef = useRef<HTMLDivElement>(null);
-  const contextActiveSessionId  = useChat();
+  const contextActiveSessionId = useChat();
 
   // File tree specific state
   const [expandedFolders, setExpandedFolders] = useState({});
@@ -531,6 +715,18 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   const [originalContentForOverlayDiff, setOriginalContentForOverlayDiff] = useState<string>('');
   const editorRef = useRef<{ view?: EditorView } | null>(null); // Ensure this ref is correctly typed
   const [activeSession, setActiveSession] = useState<any>(null); // Assuming you get this from context or prop
+
+  const handleProjectTitleChange = useCallback((newTitle: string) => {
+    setProjectData(prevData => {
+      if (!prevData) return null; // Should ideally not happen if title was editable
+      return {
+        ...prevData,
+        title: newTitle
+      };
+    });
+     // No need to call showNotification here, EditableProjectName can handle it
+     // or pass a dedicated notification function prop if preferred.
+  }, [setProjectData]); // Dependency: setProjectData
 
   // Helper function to show notifications
   const showNotification = (message, type = "success") => {
@@ -660,14 +856,14 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
         const currentModelId = activeSession?.currentModel?.id || 'gpt-4o'; // Get current model
 
         const currentContext = chatService.prepareMessagesForLLM(history, {
-            // Provide necessary params for context preparation
-            content: "Context for fallback if diff application fails", // Placeholder content
-            projectId,
-            sessionId: currentSessionId,
-            userId,
-            userName: 'User', // Replace if available
-            model: currentModelId,
-            currentFile: { id: currentFileId || '', name: currentFileName || '', content: originalContent }
+          // Provide necessary params for context preparation
+          content: "Context for fallback if diff application fails", // Placeholder content
+          projectId,
+          sessionId: currentSessionId,
+          userId,
+          userName: 'User', // Replace if available
+          model: currentModelId,
+          currentFile: { id: currentFileId || '', name: currentFileName || '', content: originalContent }
         });
         originalMessagesForFallback.current = currentContext; // Store for potential later fallback
         console.log("[LatexEditor] Stored context for potential apply failure fallback.");
@@ -1656,6 +1852,119 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
     }
   };
 
+
+  const refreshFilesAndProject = useCallback(async () => {
+    if (!projectId || !userId) return;
+    setLoading(true); // Indicate loading during refresh
+    try {
+      await authenticateWithFirebase(userId); // Ensure Firebase auth
+
+      // Fetch project details
+      const projRef = doc(db, "projects", projectId);
+      const projDoc = await getDoc(projRef);
+      if (!projDoc.exists()) throw new Error("Project not found");
+      setProjectData({ id: projDoc.id, ...projDoc.data() });
+
+      // Fetch project files (handle potential collection name difference)
+      let filesList: FileTreeItem[] = [];
+      const collectionsToTry = ["projectFiles", "project_files"]; // Prioritize 'projectFiles'
+      let foundFiles = false;
+
+      for (const collName of collectionsToTry) {
+        try {
+          const filesQuery = query(
+            collection(db, collName),
+            where("projectId", "==", projectId),
+            where("deleted", "!=", true) // Exclude deleted files
+            // Removed orderBy('order') - handle sorting client-side to avoid index need
+          );
+          const filesSnapshot = await getDocs(filesQuery);
+          if (!filesSnapshot.empty) {
+             filesList = filesSnapshot.docs.map(doc => ({
+              id: doc.id,
+              ...(doc.data() as any),
+              name: doc.data()._name_ || doc.data().name || "Untitled", // Prioritize _name_
+              // Ensure all necessary fields for FileTreeItem are mapped
+              type: doc.data().type || 'file',
+              parentId: doc.data().parentId || null,
+              content: doc.data().content || '',
+              order: doc.data().order || 0,
+              deleted: doc.data().deleted || false,
+              createdAt: doc.data().createdAt, // Keep original timestamps if needed
+              lastModified: doc.data().lastModified, // Keep original timestamps if needed
+
+            } as FileTreeItem)).sort((a, b) => (a.order || 0) - (b.order || 0)); // Client-side sort
+            foundFiles = true;
+            break; // Stop after finding files in one collection
+          }
+        } catch (queryError) {
+          console.warn(`Error querying ${collName}:`, queryError);
+          // Continue to try the next collection name
+        }
+      }
+
+      if (!foundFiles) {
+        console.warn(`No files found for project ${projectId} in checked collections.`);
+        // Optionally create default files if filesList is empty here
+        // await initializeDefaultFilesIfNeeded(projectId, userId);
+        // Then re-fetch or update filesList
+      }
+
+      setFiles(filesList);
+
+      // Select default file if none selected OR current is gone
+       const currentFileExists = filesList.some(f => f.id === currentFileId);
+       if (!currentFileId || !currentFileExists) {
+          if (filesList.length > 0) {
+             const mainTex = filesList.find(f => f.name === 'main.tex');
+             const firstTex = filesList.find(f => f.name?.toLowerCase().endsWith('.tex'));
+             const fileToSelect = mainTex || firstTex || filesList[0];
+             // Only call handleFileSelect if necessary to avoid loops
+             if(currentFileId !== fileToSelect.id) {
+                await handleFileSelect(fileToSelect.id, fileToSelect.name, fileToSelect.content || "");
+             } else if (!currentFileExists) {
+                // If current file is gone, but was already the default, reset state
+                 setCurrentFileId(null);
+                 setCurrentFileName("");
+                 setCode("");
+                 setIsSaved(true);
+             }
+          } else {
+               // No files exist at all
+               setCurrentFileId(null);
+               setCurrentFileName("");
+               setCode("");
+               setIsSaved(true);
+          }
+       } else {
+          // Current file still exists, refresh its content if needed
+          const currentFileInfo = filesList.find(f => f.id === currentFileId);
+          if (currentFileInfo && currentFileInfo.content !== code && !isImageFile(currentFileInfo.name) && !isSaved) {
+              // Optional: Maybe only reload if saved? Or prompt user?
+              // For now, let's assume refresh should reflect latest saved state
+              // setCode(currentFileInfo.content || "");
+              // setIsSaved(true);
+              console.log("File content potentially differs after refresh, but keeping unsaved editor state.");
+          }
+       }
+
+
+      setError(null);
+    } catch (err) {
+      console.error("Error refreshing data:", err);
+      setError(err instanceof Error ? err.message : "Failed to load project data");
+      setFiles([]); // Clear files on error
+      setProjectData(null);
+    } finally {
+      setLoading(false); // Ensure loading is set to false
+    }
+  // --- Dependencies for refreshFilesAndProject ---
+  // Include all state and props used inside this function
+  // Be careful with 'code' and 'isSaved' to avoid excessive refreshes if not needed
+  }, [projectId, userId, currentFileId, handleFileSelect]); // Adjusted dependencies
+
+
+
   // Handle file upload
   const handleFileUpload = async (event) => {
     const files = event.target.files;
@@ -1818,6 +2127,108 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
       throw error;
     }
   };
+
+  // --- ADD RENAMING HANDLERS ---
+
+  const handleStartRename = useCallback((itemId: string, currentName: string) => {
+    setContextMenu(null); // Close context menu first
+    setRenamingItem({ id: itemId, name: currentName });
+    // Focus will be handled by useEffect hook below
+  }, []); // Add dependencies if needed, e.g. [setContextMenu, setRenamingItem]
+
+  const handleRenameCancel = useCallback(() => {
+    setRenamingItem({ id: null, name: "" }); // Reset state
+  }, []); // Add dependencies if needed, e.g. [setRenamingItem]
+
+  const handleRenameSubmit = useCallback(async () => {
+    const { id: itemIdToRename, name: newName } = renamingItem;
+
+    // Basic validation
+    if (!itemIdToRename || !newName.trim()) {
+      handleRenameCancel();
+      return;
+    }
+
+    const finalName = newName.trim();
+
+    // Find the original item *before* attempting the update
+    const originalItemIndex = files.findIndex(f => f.id === itemIdToRename);
+    if (originalItemIndex === -1) {
+        console.error("Item to rename not found in local state:", itemIdToRename);
+        handleRenameCancel();
+        return; // Item not found locally
+    }
+    const originalItem = files[originalItemIndex];
+
+    // Check if name actually changed
+    if (finalName === originalItem.name) {
+      handleRenameCancel(); // No change, just close the input
+      return;
+    }
+
+    // TODO: Add check here if the new name already exists in the same parent directory
+    const nameExists = files.some(f =>
+        f.id !== itemIdToRename &&
+        f.parentId === originalItem.parentId && // Check same parent
+        f.name.toLowerCase() === finalName.toLowerCase()
+    );
+    if (nameExists) {
+        showNotification(`An item named "${finalName}" already exists in this folder.`, "error");
+        // Don't cancel editing, let the user fix the name
+        // handleRenameCancel();
+        return;
+    }
+
+
+    // --- Update Firestore ---
+    try {
+      const itemRef = doc(db, "projectFiles", itemIdToRename); // Adjust collection if needed
+      await updateDoc(itemRef, {
+        _name_: finalName,
+        name: finalName,
+        lastModified: serverTimestamp(),
+        updatedAt: serverTimestamp() // Keep updatedAt for consistency
+      });
+
+      // --- Update Local State Directly ---
+      setFiles(prevFiles => {
+        const updatedFiles = [...prevFiles];
+        const itemIndex = updatedFiles.findIndex(f => f.id === itemIdToRename);
+        if (itemIndex !== -1) {
+          updatedFiles[itemIndex] = { ...updatedFiles[itemIndex], name: finalName, _name_: finalName };
+        }
+        return updatedFiles;
+      });
+
+      // If the renamed item is the currently open file, update its name in the state
+      if (currentFileId === itemIdToRename) {
+        setCurrentFileName(finalName);
+      }
+
+      showNotification("Item renamed successfully");
+
+    } catch (error) {
+      console.error("Error renaming item in Firestore:", error);
+      showNotification("Failed to rename item", "error");
+      // Important: If Firestore fails, do NOT update local state,
+      // keep the input open, or revert the input value.
+      // For simplicity now, we just show error and close input.
+    } finally {
+      handleRenameCancel(); // Reset renaming UI state
+    }
+  // --- CHANGE: Updated Dependencies ---
+  // Removed refreshFilesAndProject, added setFiles, setCurrentFileName, currentFileId
+  }, [renamingItem, files, projectId, currentFileId, handleRenameCancel, setFiles, setCurrentFileName, showNotification]);
+
+  // Effect to focus input when renaming starts
+  useEffect(() => {
+    if (renamingItem.id && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingItem.id]); // Run only when the renaming item ID changes
+
+  // --- END RENAMING HANDLERS ---
 
   /**
  * A robust utility for safely applying editor changes with multiple strategies
@@ -2547,144 +2958,195 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   };
 
   // File tree rendering function
-  const renderFileTree = () => {
-    // Convert the flat file list to a tree structure
-    const treeData = buildFileTree(files);
+  const renderFileTree = (parentId: string | null = null, depth = 0) => {
+    // Get direct children of this parent
+    const childItems = files.filter(file => file.parentId === parentId);
+    // Sort folders first, then files, alphabetically
+    const sortedItems = [...childItems].sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === 'folder' ? -1 : 1;
+      }
+      // Fallback to name sorting if order is missing or equal
+      if ((a.order || 0) === (b.order || 0)) {
+         return a.name.localeCompare(b.name);
+      }
+      return (a.order || 0) - (b.order || 0); // Sort by order primarily
+    });
 
-    // Recursive function to render a tree item and its children
-    const renderTreeItem = (item, depth = 0) => {
-      const isExpanded = expandedFolders[item.id] || false;
+
+    return sortedItems.map(item => {
       const isFolder = item.type === 'folder';
-      const isActive = item.id === currentFileId;
-      const isDraggingThis = isDragging === item.id;
-      const isDragTarget = dragOverTarget === item.id;
+      const isExpanded = expandedFolders[item.id] || false;
+      const isActive = currentFileId === item.id;
+      const paddingLeft = depth * 12 + 8; // Indentation per level
 
       return (
-        <div key={item.id} style={{ marginLeft: `${depth * 16}px` }}>
+        <div key={item.id}>
+          {/* --- CORRECTED: Added DnD Handlers and drag-over class --- */}
           <div
-            className={`file-tree-item ${isFolder ? 'folder-item' : 'file-item'} flex items-center py-1.5 px-2 my-0.5 rounded cursor-pointer hover:bg-gray-700 transition-colors group ${isActive ? 'bg-gray-700 text-white' : 'text-gray-300'
-              } ${isDraggingThis ? 'dragging' : ''} ${isDragTarget ? 'drag-over' : ''}`}
-            onClick={isFolder ? () => toggleFolder(item.id) : () => handleFileSelect(item.id)}
-            draggable
-            onDragStart={(e) => handleDragStart(e, item.id)}
-            onDragOver={(e) => handleDragOver(e, item.id, isFolder)}
-            onDragEnter={(e) => handleDragEnter(e, item.id, isFolder)}
-            onDragLeave={handleDragLeave}
-            onDragEnd={handleDragEnd}
-            onDrop={(e) => handleDrop(e, item.id, isFolder)}
-            onContextMenu={(e) => handleContextMenu(e, item.id)}
-          >
-            {/* Folder icon or chevron */}
-            {isFolder ? (
-              <span onClick={(e) => { e.stopPropagation(); toggleFolder(item.id); }}>
-                {isExpanded ? (
-                  <ChevronDown className="h-3.5 w-3.5 text-gray-400 mr-1.5" />
-                ) : (
-                  <ChevronRight className="h-3.5 w-3.5 text-gray-400 mr-1.5" />
-                )}
-              </span>
-            ) : (
-              <div className="w-3.5 mr-1.5"></div>
-            )}
+             // Draggable Attributes
+             draggable // Make the entire item draggable
+             onDragStart={e => handleDragStart(e, item.id)}
+             onDragEnd={handleDragEnd} // Cleanup styles on drag end
 
-            {/* Item icon */}
+             // Drop Target Attributes (Applied to all items, logic inside handlers filters)
+             onDragOver={e => handleDragOver(e, item.id, isFolder)}
+             onDragEnter={e => handleDragEnter(e, item.id, isFolder)}
+             onDragLeave={handleDragLeave}
+             onDrop={e => handleDrop(e, item.id, isFolder)} // Drop on files or folders
+
+             // Combine className logic including drag-over state
+            className={`flex items-center py-1 pr-2 rounded group ${
+                isActive && !renamingItem.id ? 'bg-blue-100 text-blue-700 font-medium' : ''
+               } ${renamingItem.id !== item.id ? 'hover:bg-gray-100 text-gray-700 cursor-pointer' : 'bg-white'}
+               ${isDragging === item.id ? 'opacity-40' : ''}
+               ${dragOverTarget === item.id && (isFolder || parentId === null /* Allow drop on root file/folder position */) ? 'drag-over' : ''} `} // drag-over class added
+            style={{ paddingLeft: `${paddingLeft}px` }}
+            onClick={() =>
+              renamingItem.id !== item.id &&
+              (isFolder
+                ? toggleFolder(item.id, null)
+                : handleFileSelect(item.id, item.name, item.content))
+            }
+            onContextMenu={e =>
+              renamingItem.id !== item.id && handleContextMenu(e, item.id)
+            }
+          >
+            {/* Folder/File Icons */}
             {isFolder ? (
               isExpanded ? (
-                <FolderOpen className="h-4 w-4 mr-2 text-blue-400" />
+                <ChevronDown
+                  className="h-3.5 w-3.5 text-gray-500 mr-1 flex-shrink-0"
+                  onClick={e => !renamingItem.id && toggleFolder(item.id, e)}
+                />
               ) : (
-                <Folder className="h-4 w-4 mr-2 text-blue-400" />
+                <ChevronRight
+                  className="h-3.5 w-3.5 text-gray-500 mr-1 flex-shrink-0"
+                  onClick={e => !renamingItem.id && toggleFolder(item.id, e)}
+                />
               )
+            ) : (
+              <span className="w-3.5 mr-1 flex-shrink-0" />
+            )}
+            {isFolder ? (
+              <Folder className="h-4 w-4 text-sky-500 mr-1.5 flex-shrink-0" />
             ) : (
               getFileIcon(item.name)
             )}
 
-            {/* Item name */}
-            <span className="ml-1 text-sm truncate flex-1">
-              {item.name}
-            </span>
-
-            {/* Actions */}
-            <div className={`${isFolder ? 'folder-actions' : 'file-actions'} ml-auto opacity-0 group-hover:opacity-100 flex items-center space-x-1`}>
-              {isFolder && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleCreateFile(item.id);
-                  }}
-                  className="p-1 hover:bg-gray-600 rounded"
-                  title="Add File"
-                >
-                  <Plus className="h-3.5 w-3.5 text-gray-400" />
-                </button>
-              )}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleContextMenu(e, item.id);
+            {/* Conditional Rendering for Rename Input */}
+            {renamingItem.id === item.id ? (
+              <input
+                ref={renameInputRef}
+                type="text"
+                value={renamingItem.name}
+                onChange={e =>
+                  setRenamingItem({ ...renamingItem, name: e.target.value })
+                }
+                onBlur={handleRenameSubmit}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleRenameSubmit();
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    handleRenameCancel();
+                  }
                 }}
-                className="p-1 hover:bg-gray-600 rounded"
+                onClick={e => e.stopPropagation()}
+                className="flex-grow bg-white text-gray-900 text-sm px-1 py-0 border border-blue-400 rounded focus:outline-none focus:ring-1 focus:ring-blue-400 mx-1"
+              />
+            ) : (
+              <span
+                className={`text-sm truncate flex-grow ${
+                  isActive ? 'text-blue-700' : 'text-gray-800'
+                }`}
               >
-                <MoreVertical className="h-3.5 w-3.5 text-gray-400" />
-              </button>
-            </div>
+                {item.name}
+              </span>
+            )}
+            {/* End Conditional Rendering */}
+
+            {/* Actions on Hover (Hide if renaming) */}
+            {renamingItem.id !== item.id && (
+              <div className="ml-auto opacity-0 group-hover:opacity-100 flex items-center space-x-0.5 flex-shrink-0">
+                {isFolder && (
+                  <button
+                    onClick={e => {
+                      e.stopPropagation();
+                      handleCreateFile(item.id);
+                    }}
+                    className="p-1 hover:bg-gray-200 rounded"
+                    title="Add File"
+                  >
+                    <Plus className="h-3 w-3 text-gray-500" />
+                  </button>
+                )}
+                <button
+                  onClick={e => {
+                    e.stopPropagation();
+                    handleStartRename(item.id, item.name);
+                  }}
+                  className="p-1 hover:bg-gray-200 rounded"
+                  title="Rename"
+                >
+                  <Edit2 className="h-3 w-3 text-gray-500" />
+                </button>
+                <button
+                  onClick={e => {
+                    e.stopPropagation();
+                    handleContextMenu(e, item.id);
+                  }}
+                  className="p-1 hover:bg-gray-200 rounded"
+                  title="More options"
+                >
+                  <MoreVertical className="h-3.5 w-3.5 text-gray-500" />
+                </button>
+              </div>
+            )}
           </div>
 
-          {/* Render children if folder is expanded */}
-          {isFolder && isExpanded && item.children && item.children.length > 0 && (
-            <div className="ml-2">
-              {item.children.map(child => renderTreeItem(child, depth + 1))}
-            </div>
-          )}
-
-          {/* Show empty folder message */}
-          {isFolder && isExpanded && (!item.children || item.children.length === 0) && (
-            <div className="pl-8 py-1 text-gray-500 text-xs italic ml-4">
-              Empty folder
-            </div>
-          )}
+          {/* Recursive call & Empty folder message */}
+          {isFolder && isExpanded && renderFileTree(item.id, depth + 1)}
+          {isFolder &&
+            isExpanded &&
+            !files.some(f => f.parentId === item.id) && ( // Ensure 'files' state includes folders for this check or adjust logic
+              <div
+                className="pl-4 text-xs text-gray-400 italic"
+                style={{ paddingLeft: `${paddingLeft + 16}px` }}
+              >
+                Empty folder
+              </div>
+            )}
         </div>
       );
-    };
-
-    return (
-      <div
-        className="h-full overflow-auto px-2 py-2"
-        onDragOver={(e) => handleDragOver(e, 'root', true)}
-        onDragEnter={(e) => handleDragEnter(e, 'root', true)}
-        onDragLeave={handleDragLeave}
-        onDrop={(e) => handleDrop(e, 'root', true)}
-      >
-        {files.length === 0 ? (
-          <div className="text-center py-6">
-            <p className="text-gray-400 mb-2">No files yet</p>
-            <p className="text-gray-500 text-sm">
-              Drag files here or create a new file
-            </p>
-          </div>
-        ) : (
-          treeData.map(item => renderTreeItem(item))
-        )}
-      </div>
-    );
+    });
   };
 
+
+
   // Helper to get the appropriate file icon
-  const getFileIcon = (filename) => {
-    if (!filename) return <FileText className="h-4 w-4 text-gray-400" />;
+  const getFileIcon = (filename: string) => {
+    if (!filename) return <File className="h-4 w-4 mr-1.5 text-gray-400 flex-shrink-0" />; // Use File icon
 
     const extension = filename.split('.').pop()?.toLowerCase();
 
+    // --- CHANGE: Light theme icon colors ---
     if (extension === 'tex' || extension === 'latex')
-      return <FileText className="h-4 w-4 text-amber-400" />;
+      return <File className="h-4 w-4 mr-1.5 text-blue-500 flex-shrink-0" />; // Blue for TeX
     if (isImageFile(filename))
-      return <FileText className="h-4 w-4 text-purple-400" />;
+      return <File className="h-4 w-4 mr-1.5 text-purple-500 flex-shrink-0" />; // Purple for images
     if (extension === 'pdf')
-      return <FileText className="h-4 w-4 text-red-400" />;
-    if (['bib', 'cls', 'sty'].includes(extension || ''))
-      return <FileText className="h-4 w-4 text-green-400" />;
+      return <File className="h-4 w-4 mr-1.5 text-red-500 flex-shrink-0" />; // Red for PDF
+    if (['bib'].includes(extension || ''))
+      return <File className="h-4 w-4 mr-1.5 text-green-500 flex-shrink-0" />; // Green for BibTeX
+    if (['cls', 'sty'].includes(extension || ''))
+      return <File className="h-4 w-4 mr-1.5 text-teal-500 flex-shrink-0" />; // Teal for styles/classes
 
-    return <FileText className="h-4 w-4 text-gray-400" />;
+    return <File className="h-4 w-4 mr-1.5 text-gray-400 flex-shrink-0" />; // Default gray
   };
+
 
   // Render loading state
   if (loading) {
@@ -2720,186 +3182,179 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
   }
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden bg-gray-900 text-gray-100" ref={containerRef}>
+    <div className="h-screen flex flex-col overflow-hidden bg-gray-50 text-gray-900" ref={containerRef}>
       {/* Header - fixed height */}
-      <header className="px-4 py-2 bg-gray-800 border-b border-gray-700 flex items-center z-10">
-        {/* Left section */}
-        <div className="flex items-center w-1/3">
+      {/* --- CHANGE: Light Theme Header --- */}
+      <header className="bg-white border-b border-gray-200 px-4 py-2 flex items-center justify-between flex-shrink-0 z-10 shadow-sm">
+        {/* Left Side: Toggle, Back, Project Name */}
+        <div className="flex items-center space-x-3">
+          {/* Toggle Button */}
           <button
-            className="p-1.5 rounded-md hover:bg-gray-700 mr-3 text-gray-300 focus:outline-none"
-            onClick={toggleSidebar}
+            onClick={toggleSidebar} // Use existing function
+            className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md cursor-pointer" // Light theme button
             title="Toggle Sidebar"
           >
             <Menu className="h-5 w-5" />
           </button>
-
+          {/* Dashboard Button */}
           <button
             onClick={() => router.push("/dashboard")}
-            className="px-3 py-1.5 flex items-center text-sm bg-gray-700 hover:bg-gray-600 rounded-md text-gray-200"
+            className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md cursor-pointer" // Added cursor-pointer
+            title="Back to Dashboard"
           >
-            <ChevronLeft className="h-4 w-4 mr-1.5" />
-            Dashboard
+
+            <Home className="h-5 w-5" /> {/* Use Home icon */}
           </button>
+          <div className="h-5 border-l border-gray-300"></div> {/* Lighter separator */}
+          {/* Project Name */}
+           <EditableProjectName
+             projectId={projectId}
+             initialTitle={projectData?.title || "Untitled Project"}
+             className="font-medium text-gray-800 text-base"
+             // --- CHANGE: Pass the update handler ---
+             onTitleChange={handleProjectTitleChange}
+           />
+          {/* File Name Indicator */}
+          {currentFileName && (
+            <div className="flex items-center text-sm text-gray-500 ml-2">
+              <span className="mx-1">/</span>
+              <span className="text-gray-700 font-medium">{currentFileName}</span>
+              {/* --- CHANGE: Unsaved indicator for non-image files --- */}
+              {!isSaved && !isImageFile(currentFileName) && <span className="ml-1 text-blue-500 text-lg">•</span>}
+            </div>
+          )}
         </div>
-
-        {/* Center section - Project Title */}
-        <div className="flex items-center justify-center w-1/3">
-          <EditableProjectName
-            projectId={projectId}
-            initialTitle={projectData?.title || "Untitled Project"}
-            showUnsavedIndicator={!isSaved}
-            onTitleChange={(newTitle) => {
-              setProjectData(prev => ({
-                ...prev,
-                title: newTitle
-              }));
-
-              // Show notification
-              showNotification("Project name updated successfully");
-            }}
-          />
-        </div>
-
-        {/* Right section */}
-        <div className="flex items-center justify-end w-1/3 space-x-2">
-          {/* Chat button */}
-          <HeaderChatButton className="mr-2" />
-
-          {/* View toggle buttons */}
-          <div className="hidden md:flex items-center bg-gray-700 rounded-md overflow-hidden border border-gray-600 mr-2">
+        {/* Right Side: Actions, Chat Toggle, View Modes */}
+        <div className="flex items-center space-x-2">
+          {/* --- CHANGE: Refined View Mode Toggles --- */}
+          <div className="hidden md:flex items-center border border-gray-200 rounded-lg overflow-hidden shadow-sm">
             <button
-              className={`px-3 py-1.5 flex items-center text-sm ${viewMode === "code"
-                ? "bg-gray-600 text-white"
-                : "text-gray-300 hover:bg-gray-600"
+              onClick={() => setViewMode('code')}
+              className={`cursor-pointer p-2 transition-colors duration-150 ${viewMode === 'code'
+                  ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600 border-r border-gray-200'
+                  : 'text-gray-500 hover:bg-gray-50'
                 }`}
-              onClick={() => setViewMode("code")}
               title="Editor Only"
             >
-              <Edit className="h-4 w-4 mr-1.5" />
-              <span className="hidden lg:inline">Code</span>
+              <Edit className="h-4 w-4" />
             </button>
             <button
-              className={`px-3 py-1.5 flex items-center text-sm ${viewMode === "split"
-                ? "bg-gray-600 text-white"
-                : "text-gray-300 hover:bg-gray-600"
+              onClick={() => setViewMode('split')}
+              className={`cursor-pointer p-2 transition-colors duration-150 ${viewMode === 'split'
+                  ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600 border-r border-gray-200'
+                  : 'text-gray-500 hover:bg-gray-50'
                 }`}
-              onClick={() => setViewMode("split")}
               title="Split View"
             >
-              <Layout className="h-4 w-4 mr-1.5" />
-              <span className="hidden lg:inline">Split</span>
+              <Layout className="h-4 w-4" />
             </button>
             <button
-              className={`px-3 py-1.5 flex items-center text-sm ${viewMode === "pdf"
-                ? "bg-gray-600 text-white"
-                : "text-gray-300 hover:bg-gray-600"
+              onClick={() => setViewMode('pdf')}
+              className={`cursor-pointer p-2 transition-colors duration-150 ${viewMode === 'pdf'
+                  ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600'
+                  : 'text-gray-500 hover:bg-gray-50'
                 }`}
-              onClick={() => setViewMode("pdf")}
-              title="PDF Preview"
+              title="Preview Only"
             >
-              <Eye className="h-4 w-4 mr-1.5" />
-              <span className="hidden lg:inline">PDF</span>
+              <Eye className="h-4 w-4" />
             </button>
           </div>
 
-          {/* Action buttons */}
-          <div className="flex items-center space-x-2">
-            <button
-              ref={saveButtonRef}
-              onClick={handleSave}
-              disabled={isSaved || !currentFileId}
-              className={`flex items-center px-3 py-1.5 rounded-md ${isSaved || !currentFileId
-                ? "bg-gray-600 text-gray-400 cursor-not-allowed"
-                : "bg-blue-600 hover:bg-blue-700 text-white"
-                } text-sm transition-colors`}
-              title="Save (Ctrl+S)"
-            >
-              <Save className="h-4 w-4 mr-1.5" />
-              <span className="hidden sm:inline">Save</span>
-            </button>
+          {/* --- CHANGE: Refined Action Buttons --- */}
+          {/* Save Button */}
+          <button
+            ref={saveButtonRef}
+            onClick={handleSave}
+            disabled={isSaved || !currentFileId || isImageFile(currentFileName)}
+            className={`flex items-center px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-1 ${isSaved || !currentFileId || isImageFile(currentFileName)
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
+                : 'cursor-pointer bg-blue-600 text-white hover:bg-blue-700 border border-blue-600 focus:ring-blue-500'
+              }`}
+            title="Save (Ctrl+S)"
+          >
+            <Save className="h-4 w-4 mr-1.5" /> Save
+          </button>
 
-            <button
-              ref={compileButtonRef}
-              onClick={handleCompile}
-              disabled={isCompiling || !currentFileId}
-              className={`flex items-center px-3 py-1.5 rounded-md ${isCompiling || !currentFileId
-                ? "bg-gray-600 text-gray-300 cursor-not-allowed"
-                : "bg-teal-600 hover:bg-teal-700 text-white"
-                } text-sm transition-colors`}
-              title="Compile (Ctrl+Enter)"
-            >
-              {isCompiling ? (
-                <>
-                  <Loader className="h-4 w-4 mr-1.5 animate-spin" />
-                  <span className="hidden sm:inline">Compiling...</span>
-                </>
-              ) : (
-                <>
-                  <Play className="h-4 w-4 mr-1.5" />
-                  <span className="hidden sm:inline">Compile</span>
-                </>
-              )}
-            </button>
+          {/* --- CHANGE: Refined Compile Button Style --- */}
+          <button
+            ref={compileButtonRef}
+            onClick={handleCompile}
+            disabled={isCompiling || !currentFileId || !currentFileName?.toLowerCase().endsWith('.tex')}
+            className={`cursor-pointer flex items-center px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-1 ${isCompiling || !currentFileId || !currentFileName?.toLowerCase().endsWith('.tex')
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200' // Disabled state
+                // Updated Enabled State: Use a gray shade
+                : 'bg-gray-600 text-white hover:bg-gray-700 border border-gray-600 focus:ring-gray-500'
+              }`}
+            title="Compile (Ctrl+Enter)"
+          >
+            {isCompiling ? <Loader className="h-4 w-4 mr-1.5 animate-spin" /> : <Play className="h-4 w-4 mr-1.5" />} Compile
+          </button>
+          {/* Download Button (PDF) */}
+          <button
+            onClick={handleDownloadPdf}
+            disabled={!pdfData}
+            className={`cursor-pointer p-1.5 rounded-lg text-sm font-medium transition-all duration-150 shadow-sm border focus:outline-none focus:ring-2 focus:ring-offset-1 ${!pdfData
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border-gray-200'
+                : 'bg-white text-gray-600 hover:bg-gray-50 border-gray-300 hover:border-gray-400 focus:ring-indigo-500'
+              }`}
+            title="Download PDF"
+          >
+            <Download className="h-5 w-5" />
+          </button>
 
-            <button
-              onClick={handleDownloadPdf}
-              disabled={!pdfData}
-              className={`flex items-center px-3 py-1.5 rounded-md ${!pdfData
-                ? "bg-gray-600 text-gray-400 cursor-not-allowed"
-                : "bg-gray-700 hover:bg-gray-600 text-white"
-                } text-sm transition-colors`}
-              title="Download PDF"
-            >
-              <Download className="h-4 w-4 mr-1.5" />
-              <span className="hidden md:inline">Download</span>
-            </button>
-          </div>
+          {/* Chat Toggle Button */}
+          <HeaderChatButton /> {/* Use the existing component */}
         </div>
-      </header>
 
-      {/* Main content area - flexible height with NO GAPS */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar - with NO right margin/padding */}
+      </header>
+      <div className="flex-1 flex overflow-hidden scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400 scrollbar-track-gray-100">
+        {/* Sidebar with Light Theme */}
         {!isSidebarCollapsed && (
           <ResizablePanel
             direction="horizontal"
             initialSize={sidebarWidth}
-            minSize={180}
-            maxSize={400}
+            minSize={200}
+            maxSize={500}
             onChange={setSidebarWidth}
-            className="h-full flex-shrink-0 bg-gray-800 relative flex flex-col"
+            className="h-full flex-shrink-0 bg-white border-r border-gray-200 shadow-sm flex flex-col"
             resizeFrom="end"
           >
-            {/* Sidebar header */}
-            <div className="p-2 border-b border-gray-700 bg-gray-800 flex items-center justify-between">
-              <h3 className="font-medium text-sm text-gray-300">PROJECT FILES</h3>
+            {/* Light Theme Sidebar Header */}
+            <div className="p-2 border-b border-gray-200 bg-white flex items-center justify-between flex-shrink-0">
+              <h3 className="font-medium text-sm text-gray-700 pl-1">PROJECT FILES</h3>
               <div className="flex space-x-1">
                 <button
                   onClick={() => handleCreateFile(null)}
-                  className="p-1 rounded text-gray-400 hover:text-white hover:bg-gray-700"
+                  className="p-1 rounded text-gray-500 hover:text-gray-700 hover:bg-gray-100"
                   title="New File"
                 >
                   <FilePlus className="h-4 w-4" />
                 </button>
                 <button
                   onClick={() => handleCreateFolder(null)}
-                  className="p-1 rounded text-gray-400 hover:text-white hover:bg-gray-700"
+                  className="p-1 rounded text-gray-500 hover:text-gray-700 hover:bg-gray-100"
                   title="New Folder"
                 >
                   <FolderPlus className="h-4 w-4" />
                 </button>
                 <button
-                  onClick={() => setIsUploadModalOpen(true)}
-                  className="p-1 rounded text-gray-400 hover:text-white hover:bg-gray-700"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="p-1 rounded text-gray-500 hover:text-gray-700 hover:bg-gray-100"
                   title="Upload Files"
                 >
                   <Upload className="h-4 w-4" />
                 </button>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileUpload}
+                  className="hidden"
+                  multiple
+                />
               </div>
             </div>
-
-            {/* File tree */}
-            <div className="flex-1 overflow-hidden">
+            {/* File Tree Container with Light Scrollbars */}
+            <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400 scrollbar-track-gray-100">
               {renderFileTree()}
             </div>
           </ResizablePanel>
@@ -2908,51 +3363,22 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
         {/* Main editor area - Ensure left border is 0 width */}
         <div className="flex-1 overflow-hidden h-full relative" ref={contentRef}>
 
-          {/* Code-only view - Apply specific styling for CodeMirror to fill vertical space */}
           {viewMode === "code" && !isImageView && (
-            <div className="w-full h-full bg-gray-900 overflow-hidden">
+            <div className="w-full h-full bg-white overflow-hidden">
               <CodeMirror
-                // ref={editorRef}  // Make sure this ref is defined properly
+                ref={editorRef}
                 value={code}
-                width="100%"
                 height="100%"
-                onCreateEditor={handleEditorCreate}
-                extensions={[
-                  StreamLanguage.define(stex),
-                  latexTheme,
-                  editorSetup,
-                  EditorView.lineWrapping // Optional: enable line wrapping
-                ]}
+                extensions={editorExtensions}
                 onChange={handleCodeChange}
-                theme="dark"
-                className="h-full overflow-auto"
-                basicSetup={{
-                  lineNumbers: true,
-                  highlightActiveLineGutter: true,
-                  highlightSpecialChars: true,
-                  foldGutter: true,
-                  drawSelection: true,
-                  dropCursor: true,
-                  allowMultipleSelections: true,
-                  indentOnInput: true,
-                  syntaxHighlighting: true,
-                  bracketMatching: true,
-                  closeBrackets: true,
-                  autocompletion: true,
-                  rectangularSelection: true,
-                  crosshairCursor: true,
-                  highlightActiveLine: true,
-                  highlightSelectionMatches: true,
-                  closeBracketsKeymap: true,
-                  searchKeymap: true,
-                  foldKeymap: true,
-                  completionKeymap: true,
-                  lintKeymap: true,
-                }}
+                onCreateEditor={handleEditorCreate}
+                theme="light"
+                className="h-full"
               />
             </div>
           )}
 
+          {/* Split view (code + preview) */}
           {/* Split view (code + preview) */}
           {viewMode === "split" && !isImageView && (
             <div className="flex w-full h-full">
@@ -2961,96 +3387,68 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
                 className="h-full relative panel-transition"
                 style={{ width: `${editorRatio * 100}%` }}
               >
-                <div className="absolute inset-0 overflow-hidden">
+                <div className="absolute inset-0 overflow-hidden bg-white">
                   <CodeMirror
-                    // ref={editorRef}
+                    ref={editorRef}
                     value={code}
-                    width="100%"
                     height="100%"
-                    extensions={[
-                      StreamLanguage.define(stex),
-                      latexTheme,
-                      editorSetup,
-                      EditorView.lineWrapping
-                    ]}
-                    onCreateEditor={handleEditorCreate} // Use callback
+                    extensions={editorExtensions}
                     onChange={handleCodeChange}
-                    theme="dark"
-                    className="h-full overflow-auto" // Added overflow-auto
-                    basicSetup={{
-                      lineNumbers: true,
-                      highlightActiveLineGutter: true,
-                      highlightSpecialChars: true,
-                      foldGutter: true,
-                      drawSelection: true,
-                      dropCursor: true,
-                      allowMultipleSelections: true,
-                      indentOnInput: true,
-                      syntaxHighlighting: true,
-                      bracketMatching: true,
-                      closeBrackets: true,
-                      autocompletion: true,
-                      rectangularSelection: true,
-                      crosshairCursor: true,
-                      highlightActiveLine: true,
-                      highlightSelectionMatches: true,
-                      closeBracketsKeymap: true,
-                      searchKeymap: true,
-                      foldKeymap: true,
-                      completionKeymap: true,
-                      lintKeymap: true,
-                    }}
+                    onCreateEditor={handleEditorCreate}
+                    theme="light"
+                    className="h-full"
                   />
                 </div>
               </div>
 
-              {/* Resize Handle - fills gap completely */}
+              {/* Resize Handle */}
               <div
-                className="w-2 h-full cursor-col-resize flex items-center justify-center z-10 bg-gray-700 resize-handle"
+                className="w-1.5 h-full cursor-col-resize flex items-center justify-center bg-gray-200 hover:bg-blue-200 active:bg-blue-300 z-10 resize-handle"
                 onMouseDown={startEditorResize}
               >
-                <div className="w-1 h-full bg-gray-700 hover:bg-blue-500 active:bg-blue-600"></div>
+                <div className="w-px h-8 bg-gray-400"></div>
               </div>
 
-              {/* Preview - NO left gap */}
+              {/* Preview */}
               <div
                 className="h-full overflow-hidden panel-transition"
                 style={{ width: `calc(${(1 - editorRatio) * 100}% - 8px)` }}
               >
                 {isCompiling ? (
-                  <div className="h-full flex items-center justify-center bg-gray-900">
+                  // Compiling Loader
+                  <div className="h-full flex items-center justify-center bg-gray-100">
                     <div className="flex flex-col items-center">
-                      <Loader className="h-10 w-10 text-blue-500 animate-spin" />
-                      <p className="mt-4 text-gray-400">Compiling LaTeX...</p>
+                      <Loader className="h-8 w-8 text-blue-500 animate-spin" />
+                      <p className="mt-3 text-gray-600">Compiling LaTeX...</p>
                     </div>
                   </div>
                 ) : compilationError ? (
-                  <div className="h-full flex items-center justify-center p-4 bg-gray-900">
-                    <div className="max-w-lg p-6 bg-gray-800 border border-red-800 rounded-lg">
-                      <h3 className="text-lg font-medium text-red-400 mb-2">Compilation Error</h3>
-                      <pre className="text-sm text-red-300 whitespace-pre-wrap font-mono bg-gray-900 p-4 rounded border border-red-900 max-h-80 overflow-auto">
-                        {compilationError}
-                      </pre>
-                    </div>
+                  // Compilation Error
+                  <div className="h-full flex flex-col items-center justify-center p-6 text-center bg-red-50 border border-red-200">
+                    <X className="h-10 w-10 text-red-400 mb-3" />
+                    <h3 className="font-semibold text-red-700 mb-2">Compilation Error</h3>
+                    <pre className="text-xs text-left text-red-600 bg-white p-3 rounded border border-red-100 max-h-60 overflow-auto w-full max-w-md font-mono">
+                      {compilationError}
+                    </pre>
                   </div>
                 ) : !pdfData ? (
-                  <div className="h-full flex items-center justify-center bg-gray-900">
-                    <div className="text-center max-w-md p-6">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 text-gray-700 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                      </svg>
-                      <p className="text-gray-400 text-lg font-medium mb-2">No PDF Preview</p>
-                      <p className="text-gray-500 mb-4">Click "Compile" to generate a PDF preview of your LaTeX document.</p>
-                      <button
-                        onClick={handleCompile}
-                        className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-                      >
-                        Compile Now
-                      </button>
-                    </div>
+                  // No PDF Preview
+                  <div className="h-full flex flex-col items-center justify-center text-center p-6 bg-gray-100">
+                    <FileText className="h-12 w-12 text-gray-300 mb-4" />
+                    <p className="text-gray-600 font-medium mb-2">No PDF Preview</p>
+                    <p className="text-gray-500 text-sm mb-4">
+                      Compile your document to see the preview.
+                    </p>
+                    <button
+                      onClick={handleCompile}
+                      className="px-4 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700"
+                    >
+                      Compile Now
+                    </button>
                   </div>
                 ) : (
-                  <div className="h-full">
+                  // PDF Viewer (Container Styling)
+                  <div className="h-full bg-gray-100">
                     <PdfViewer
                       pdfData={pdfData}
                       isLoading={isCompiling}
@@ -3065,7 +3463,8 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
             </div>
           )}
 
-          {/* PDF-only view */}
+
+          {/* PDF-only view (unchanged) */}
           {viewMode === "pdf" && !isImageView && (
             <div className="w-full h-full">
               {isCompiling ? (
@@ -3109,12 +3508,13 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
                     htmlPreview={htmlPreview || undefined}
                     documentTitle={currentFileName || projectData?.title || "document"}
                     onRecompileRequest={handleCompile}
-                    hideToolbar={false} // We show the PdfViewer's toolbar in PDF-only mode
+                    hideToolbar={false}
                   />
                 </div>
               )}
             </div>
           )}
+
 
           {/* Image view */}
           {isImageView && (
@@ -3156,91 +3556,138 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
       </div>
 
       {/* Status bar - fixed height */}
-      <div className="h-6 bg-gray-800 border-t border-gray-700 flex items-center px-4 text-xs text-gray-400 z-10">
-        <div className="flex-1 flex items-center">
-          {currentFileName ? (
-            <>
-              <span className="font-mono">{currentFileName}</span>
-              <span className="mx-2">•</span>
-              <span>{code.split('\n').length} lines</span>
-              {!isSaved && (
-                <>
-                  <span className="mx-2">•</span>
-                  <span className="text-yellow-400">Unsaved changes</span>
-                </>
-              )}
-            </>
-          ) : (
-            <span>No file selected</span>
-          )}
+      {/* Status Bar */}
+      {/* --- CHANGE: Light Theme Status Bar --- */}
+      <div className="h-6 bg-white border-t border-gray-200 flex items-center justify-between px-4 text-xs text-gray-500 flex-shrink-0">
+        <div className="flex items-center space-x-3">
+          {/* TODO: Get cursor position from CodeMirror */}
+          <span>Ln ?, Col ?</span>
+          <span>{code.split('\n').length} Lines</span>
+          <span>UTF-8</span>
         </div>
-        <div className="flex items-center">
-          <label className="flex items-center mr-4 cursor-pointer">
+        <div className="flex items-center space-x-3">
+          {/* Saved status */}
+          {!isSaved && !isImageFile(currentFileName) ? (
+            <span className="text-blue-600 font-medium">Unsaved Changes</span>
+          ) : (
+            <span className="text-green-600">Saved</span>
+          )}
+          {/* Auto-compile toggle */}
+          <label className="flex items-center cursor-pointer select-none">
             <input
               type="checkbox"
               checked={autoCompile}
               onChange={(e) => setAutoCompile(e.target.checked)}
-              className="mr-1.5 h-3 w-3"
+              className="mr-1.5 h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 focus:ring-offset-0 focus:ring-1"
             />
-            <span>Auto-compile</span>
+            Auto-compile
           </label>
-          <span>LaTeX Editor</span>
+          <span className="text-gray-400">Kepler Editor</span> {/* App Name */}
         </div>
       </div>
 
-      {/* Context Menu */}
-      {contextMenu && (
-        <div
-          ref={contextMenuRef}
-          style={{
-            position: 'fixed',
-            left: `${contextMenu.x}px`,
-            top: `${contextMenu.y}px`,
-            zIndex: 50
+
+{/* Context Menu */}
+{contextMenu && (
+  <div
+    ref={contextMenuRef}
+    style={{
+      position: 'fixed',
+      left: `${contextMenu.x}px`,
+      top: `${contextMenu.y}px`,
+      zIndex: 50
+    }}
+    className="bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[160px]"
+  >
+    {/* File Actions */}
+    {files.find(f => f.id === contextMenu.itemId)?.type === 'file' && (
+      <>
+        <button
+          onClick={() => {
+            const item = files.find(f => f.id === contextMenu.itemId);
+            if (item) handleFileSelect(item.id, item.name, item.content);
+            setContextMenu(null);
           }}
-          className="bg-gray-800 rounded-lg shadow-lg border border-gray-700 py-1 min-w-[160px]"
+          className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
         >
-          {/* Context menu items */}
-          <button
-            onClick={() => {
-              const item = files.find(f => f.id === contextMenu.itemId);
-              if (item && item.type === 'file') {
-                handleFileSelect(contextMenu.itemId);
-              }
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-700/80 text-gray-300"
-          >
-            <FileText className="h-4 w-4 mr-3 text-gray-500" />
-            Open
-          </button>
+          <FileText className="h-4 w-4 mr-2 text-gray-500" />
+          Open File
+        </button>
 
-          {/* Folder-specific actions */}
-          {files.find(f => f.id === contextMenu.itemId)?.type === 'folder' && (
-            <button
-              onClick={() => {
-                handleCreateFile(contextMenu.itemId);
-                setContextMenu(null);
-              }}
-              className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-700/80 text-gray-300"
-            >
-              <FilePlus className="h-4 w-4 mr-3 text-gray-500" />
-              New File
-            </button>
-          )}
+        {/* Rename Action for File */}
+        <button
+          onClick={() => {
+            handleStartRename(
+              contextMenu.itemId,
+              files.find(f => f.id === contextMenu.itemId)?.name || ''
+            );
+            setContextMenu(null);
+          }}
+          className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
+        >
+          <Edit2 className="h-4 w-4 mr-2 text-gray-500" />
+          Rename
+        </button>
+      </>
+    )}
 
-          <button
-            onClick={() => {
-              handleDeleteItem(contextMenu.itemId);
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-700/80 text-red-400"
-          >
-            <Trash className="h-4 w-4 mr-3 text-red-400" />
-            Delete
-          </button>
-        </div>
-      )}
+    {/* Folder Actions */}
+    {files.find(f => f.id === contextMenu.itemId)?.type === 'folder' && (
+      <>
+        <button
+          onClick={() => {
+            handleCreateFile(contextMenu.itemId);
+            setContextMenu(null);
+          }}
+          className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
+        >
+          <FilePlus className="h-4 w-4 mr-2 text-gray-500" />
+          New File Here
+        </button>
+        <button
+          onClick={() => {
+            handleCreateFolder(contextMenu.itemId);
+            setContextMenu(null);
+          }}
+          className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
+        >
+          <FolderPlus className="h-4 w-4 mr-2 text-gray-500" />
+          New Folder Here
+        </button>
+
+        {/* Rename Action for Folder */}
+        <button
+          onClick={() => {
+            handleStartRename(
+              contextMenu.itemId,
+              files.find(f => f.id === contextMenu.itemId)?.name || ''
+            );
+            setContextMenu(null);
+          }}
+          className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
+        >
+          <Edit2 className="h-4 w-4 mr-2 text-gray-500" />
+          Rename
+        </button>
+      </>
+    )}
+
+    {/* Separator */}
+    <div className="border-t border-gray-200 my-1 mx-2"></div>
+
+    {/* Delete Action */}
+    <button
+      onClick={() => {
+        handleDeleteItem(contextMenu.itemId);
+        setContextMenu(null);
+      }}
+      className="w-full text-left px-3 py-1.5 text-sm flex items-center text-red-600 hover:bg-red-50"
+    >
+      <Trash2 className="h-4 w-4 mr-2" />
+      Delete
+    </button>
+  </div>
+)}
 
       {/* Upload Modal */}
       {isUploadModalOpen && (
@@ -3296,27 +3743,93 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
       )}
 
 
-      {/* Modal Rendering */}
-      {modalSuggestion && isEditorReady && editorRef.current?.view && typeof document !== 'undefined' && (
+      {/* Suggestion Overlay Modal */}
+      {modalSuggestion && isEditorReady && editorViewRef.current && typeof document !== 'undefined' && (
         ReactDOM.createPortal(
           <SuggestionOverlay
-            // Use a key that changes when mode changes to force re-mount/state reset
             key={modalSuggestion.mode + (modalSuggestion.diffHunks?.[0] || modalSuggestion.searchReplaceBlocks?.[0]?.search || 'modal')}
-            mode={modalSuggestion.mode} // Pass the current mode
-            diffHunks={modalSuggestion.diffHunks} // Pass diff hunks (will be undefined in S/R mode)
-            searchReplaceBlocks={modalSuggestion.searchReplaceBlocks} // Pass S/R blocks (undefined in diff mode)
+            mode={modalSuggestion.mode}
+            diffHunks={modalSuggestion.diffHunks}
+            searchReplaceBlocks={modalSuggestion.searchReplaceBlocks}
             explanation={modalSuggestion.explanation}
-            originalContent={originalContentForOverlayDiff} // Use stored original for display consistency
-            isLoadingFallback={isLoadingFallback} // Pass loading state
-            onApplyDiff={handleApplyDiffSuggestion} // Pass specific handler for diffs
-            onApplySearchReplace={handleApplySearchReplace} // Pass specific handler for S/R
-            onReject={handleRejectAndClose} // Use unified reject handler
-            editorView={editorRef.current.view}
+            originalContent={originalContentForOverlayDiff}
+            isLoadingFallback={isLoadingFallback}
+            onApplyDiff={handleApplyDiffSuggestion}
+            onApplySearchReplace={handleApplySearchReplace}
+            onReject={handleRejectAndClose}
+            editorView={editorViewRef.current}
             fileName={currentFileName || 'current file'}
+            // --- CHANGE: Apply light theme styles ---
+            className="suggestion-overlay-light"
           />,
           document.body
         )
       )}
+      {/* --- CHANGE: Add CSS for the light theme overlay --- */}
+      <style jsx global>{`
+  .suggestion-overlay-light {
+    /* Light backdrop */
+    background-color: rgba(249, 250, 251, 0.7); /* bg-gray-50 with opacity */
+    backdrop-filter: blur(4px);
+  }
+  .suggestion-overlay-light .overlay-content {
+    /* Light content box */
+    background-color: white;
+    border: 1px solid #e5e7eb; /* border-gray-200 */
+    color: #111827; /* text-gray-900 */
+    border-radius: 0.5rem; /* rounded-lg */
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1),
+                0 4px 6px -2px rgba(0, 0, 0, 0.05); /* shadow-lg */
+  }
+  .suggestion-overlay-light .diff-viewer {
+    /* Light diff viewer border */
+    border: 1px solid #e5e7eb; /* border-gray-200 */
+    border-radius: 0.375rem; /* rounded-md */
+  }
+  /* Example button styling - match dashboard */
+  .suggestion-overlay-light .apply-button {
+    background-color: #2563eb; /* bg-blue-600 */
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem; /* rounded-md */
+    font-size: 0.875rem; /* text-sm */
+    font-weight: 500; /* font-medium */
+    transition: background-color 0.15s ease;
+  }
+  .suggestion-overlay-light .apply-button:hover {
+    background-color: #1d4ed8; /* bg-blue-700 */
+  }
+  .suggestion-overlay-light .reject-button {
+    background-color: white;
+    color: #374151; /* text-gray-700 */
+    border: 1px solid #d1d5db; /* border-gray-300 */
+    padding: 0.5rem 1rem;
+    border-radius: 0.375rem; /* rounded-md */
+    font-size: 0.875rem; /* text-sm */
+    transition: background-color 0.15s ease;
+  }
+  .suggestion-overlay-light .reject-button:hover {
+    background-color: #f9fafb; /* bg-gray-50 */
+  }
+  .suggestion-overlay-light h3 {
+    /* Style heading */
+    color: #1f2937; /* text-gray-800 */
+    font-weight: 600; /* font-semibold */
+  }
+  .suggestion-overlay-light p {
+    /* Style explanation text */
+    color: #4b5563; /* text-gray-600 */
+  }
+  .suggestion-overlay-light code {
+    /* Style inline code if any */
+    background-color: #f3f4f6; /* bg-gray-100 */
+    color: #1f2937; /* text-gray-800 */
+    padding: 0.1rem 0.3rem;
+    border-radius: 0.25rem;
+    font-size: 0.8em;
+  }
+`}</style>
+
 
 
 

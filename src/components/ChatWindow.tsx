@@ -15,7 +15,7 @@ import { applyMultipleUnifiedDiffPatches, applyFullContentChange } from '../util
 import { ChatFileUtils } from '../utils/ChatFileUtils';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useChat } from '../context/ChatContext';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/cjs/styles/prism';
+import { prism, vscDarkPlus } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 import {
   collection,
   query,
@@ -356,25 +356,27 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
 
   const ThinkingIndicator = () => (
     <div className="flex flex-col items-start message-container">
-      <div className="text-xs text-gray-400 mb-1 px-1">
-        LaTeX Assistant
+       {/* --- CHANGE: Adjusted text color --- */}
+      <div className="text-xs text-gray-500 mb-1 px-1 font-medium">
+        Kepler Assistant {/* Use App Name */}
       </div>
-      <div className="max-w-[85%] rounded-lg px-3 py-2 bg-gray-700/60 text-gray-200">
+       {/* --- CHANGE: Light theme bubble --- */}
+      <div className="max-w-[85%] rounded-lg px-3 py-2 bg-gray-100 text-gray-800 border border-gray-200">
         <div className="flex items-center">
-          <Brain className="h-5 w-5 mr-2 text-blue-400 animate-pulse" />
+          <Brain className="h-5 w-5 mr-2 text-blue-500 animate-pulse" /> {/* Keep icon color */}
           <div className="flex items-center">
-            <span className="text-sm">Thinking</span>
+            <span className="text-sm text-gray-700">Thinking</span> {/* Darker text */}
+            {/* Keep animation dots */}
             <span className="flex ml-2">
-              <span className="h-1.5 w-1.5 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-              <span className="h-1.5 w-1.5 bg-blue-400 rounded-full mx-1 animate-bounce [animation-delay:-0.15s]"></span>
-              <span className="h-1.5 w-1.5 bg-blue-400 rounded-full animate-bounce"></span>
+              <span className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+              <span className="h-1.5 w-1.5 bg-blue-500 rounded-full mx-1 animate-bounce [animation-delay:-0.15s]"></span>
+              <span className="h-1.5 w-1.5 bg-blue-500 rounded-full animate-bounce"></span>
             </span>
           </div>
         </div>
       </div>
     </div>
   );
-
 
 
 
@@ -780,7 +782,7 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
         }
         // Render the inline code itself
         inlineParts.push(
-          <code key={`inline-code-${offset}-${msg.id}`} className="bg-gray-800/70 text-red-300/90 px-1 py-0.5 rounded text-[0.85em] font-mono mx-[1px]">
+<code key={`inline-code-${offset}-${msg.id}`} className="bg-gray-100 text-red-700 px-1 py-0.5 rounded text-[0.85em] font-mono mx-[1px] border border-gray-200">
             {code}
           </code>
         );
@@ -816,17 +818,17 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
         <div key={`code-block-${offset}-${msg.id}`} className="my-2 relative text-left">
           {/* Outer container for the code block */}
           <div className="relative rounded-md overflow-hidden">
-            {/* The syntax highlighter */}
-            <SyntaxHighlighter
+          <SyntaxHighlighter
               language={language}
-              style={vscDarkPlus}
+              style={prism} // Or choose another light style like 'coy', 'okaidia' (adjust import)
               customStyle={{
                 margin: 0,
                 padding: '0.75rem',
-                paddingRight: '2.5rem', // Extra padding on right for button
-                borderRadius: '0.25rem',
-                fontSize: '0.8rem',
-                backgroundColor: '#161616',
+                paddingRight: '2.5rem', // Keep padding for button
+                borderRadius: '0.25rem', // rounded-md
+                fontSize: '0.8rem', // text-xs
+                backgroundColor: '#f3f4f6', // bg-gray-100
+                border: '1px solid #e5e7eb', // border-gray-200
               }}
               wrapLongLines={true}
               PreTag="div"
@@ -834,10 +836,10 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
               {code.trim()}
             </SyntaxHighlighter>
 
-            {/* Absolutely positioned copy button with higher z-index */}
-            <button
+{/* --- CHANGE: Adjust copy button style --- */}
+<button
               onClick={() => copyToClipboard(code.trim())}
-              className="absolute top-2 right-2 p-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white rounded shadow-sm z-10"
+              className="absolute top-1.5 right-1.5 p-1 bg-gray-200 hover:bg-gray-300 text-gray-600 hover:text-gray-800 rounded shadow-sm z-10" // Lighter button
               title="Copy code"
               aria-label="Copy code to clipboard"
             >
@@ -1904,11 +1906,11 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
         onChange={handlePanelResize}
         onResizeStart={() => setIsResizing(true)}
         onResizeEnd={() => setIsResizing(false)}
-        className={`flex flex-col h-full w-full relative bg-[#1e1e1e] will-change-width ${isResizing ? 'resizing' : ''}`}
+        className={`flex flex-col h-full w-full relative bg-white border-l border-gray-200 shadow-sm will-change-width ${isResizing ? 'resizing' : ''}`}
         resizeFrom="start"
       >
         {/* Header - CHAT title and Actions */}
-        <div className="flex items-center justify-between border-b border-gray-800">
+        <div className="flex items-center justify-between p-3 border-b border-gray-200 flex-shrink-0">
           {/* Chat title - just the CHAT heading */}
           <div className="flex items-center">
             {editingTitle ? (
@@ -1925,11 +1927,11 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
                   }
                 }}
                 autoFocus
-                className="bg-transparent border-b border-blue-400 text-white px-2 py-1 text-sm focus:outline-none"
+                className="bg-gray-100 border border-blue-300 text-gray-900 px-2 py-1 text-sm rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             ) : (
               <h2
-                className="text-white text-sm font-medium cursor-pointer px-2 py-1"
+                className="text-gray-800 text-sm font-semibold cursor-pointer px-2 py-1 hover:bg-gray-100 rounded"
                 onClick={() => setEditingTitle(true)}
                 title="Click to rename chat"
               >
@@ -1941,7 +1943,7 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
           {/* Action buttons */}
           <div className="flex items-center">
             <button
-              className="p-1 text-gray-400 hover:text-gray-300"
+              className="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-md"
               onClick={createNewChat}
               title="New chat"
             >
@@ -1951,7 +1953,7 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
             {/* Chat History Button */}
             <div className="relative" ref={historyRef}>
               <button
-                className="p-1 text-gray-400 hover:text-gray-300"
+                className="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-md"
                 onClick={() => setShowChatHistory(!showChatHistory)}
                 title="Chat history"
               >
@@ -1960,47 +1962,41 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
 
               {/* Chat History Dropdown */}
               {showChatHistory && (
-                <div className="absolute right-0 top-full mt-1 bg-[#252526] border border-[#3c3c3c] rounded-md shadow-lg z-20 w-72">
-                  <div className="py-1.5 px-3 border-b border-gray-700/50 flex items-center justify-between">
-                    <span className="text-xs text-gray-400 uppercase font-medium">Recent Chats</span>
-                    <button
-                      onClick={createNewChat}
-                      className="text-blue-400 hover:text-blue-300 text-xs flex items-center"
-                    >
-                      <Plus className="h-3.5 w-3.5 mr-1.5" />
-                      New Chat
+                // Keep main dropdown styles
+                <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20 w-72">
+                  {/* Keep header styles */}
+                  <div className="py-1.5 px-3 border-b border-gray-200 flex items-center justify-between">
+                    <span className="text-xs text-gray-500 uppercase font-semibold">Recent Chats</span>
+                    <button onClick={createNewChat} className="text-blue-600 hover:text-blue-800 text-xs font-medium flex items-center">
+                      <Plus className="h-3.5 w-3.5 mr-1" />New
                     </button>
                   </div>
-
-                  <div className="max-h-80 overflow-y-auto py-1">
+                   {/* --- CHANGE: Add Light Theme Scrollbar --- */}
+                  <div className="max-h-80 overflow-y-auto py-1 scrollbar-thin scrollbar-thumb-gray-300 hover:scrollbar-thumb-gray-400 scrollbar-track-gray-100">
                     {chatSessions.length === 0 ? (
-                      <div className="px-3 py-4 text-sm text-gray-400 text-center">
-                        No chat sessions yet. Start a new chat!
-                      </div>
+                      <div className="px-3 py-4 text-sm text-gray-500 text-center">No chats yet.</div>
                     ) : (
                       chatSessions.map(session => (
                         <button
                           key={session.id}
                           onClick={() => selectChatSession(session.id)}
-                          className={`w-full text-left px-3 py-2 text-sm flex items-center ${chatContext.activeSessionId === session.id
-                            ? 'bg-[#04395e] text-white'
-                            : 'text-gray-300 hover:bg-[#2a2d2e]'
+                           // --- CHANGE: Refined Item Styling ---
+                          className={`w-full text-left px-3 py-2 text-sm flex items-center transition-colors duration-100 ${contextActiveSessionId === session.id
+                            ? 'bg-blue-50 text-blue-700' // Keep active state
+                            : 'text-gray-700 hover:bg-gray-100' // Consistent default text, lighter hover
                             }`}
                         >
-                          <MessageSquare className={`h-4 w-4 flex-shrink-0 mr-2 ${chatContext.activeSessionId === session.id ? 'text-white' : 'text-gray-500'
-                            }`} />
+                           {/* --- CHANGE: Consistent Icon Color --- */}
+                          <MessageSquare className={`h-4 w-4 flex-shrink-0 mr-2 ${contextActiveSessionId === session.id ? 'text-blue-600' : 'text-gray-500'}`} />
                           <div className="flex-1 flex justify-between items-center min-w-0 space-x-2">
-                            <span className="truncate font-medium">
-                              {session.title && session.title !== "New Chat"
-                                ? session.title
-                                : "Untitled Chat"}
+                             {/* --- CHANGE: Consistent Title Color --- */}
+                            <span className={`truncate font-medium ${contextActiveSessionId === session.id ? 'text-blue-700' : 'text-gray-800'}`}>
+                              {session.title || "Untitled Chat"}
                             </span>
-                            {session.timestamp && (
-                              <span className={`text-xs whitespace-nowrap ${chatContext.activeSessionId === session.id ? 'text-blue-200' : 'text-gray-500'
-                                }`}>
-                                {formatTime(session.timestamp)}
-                              </span>
-                            )}
+                             {/* --- CHANGE: Consistent Timestamp Color --- */}
+                            <span className={`text-xs whitespace-nowrap ${contextActiveSessionId === session.id ? 'text-blue-600' : 'text-gray-500'}`}>
+                              {formatTime(session.timestamp)}
+                            </span>
                           </div>
                         </button>
                       ))
@@ -2008,11 +2004,12 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
                   </div>
                 </div>
               )}
+
             </div>
 
             <button
               onClick={onClose}
-              className="p-1 text-gray-400 hover:text-gray-300"
+              className="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-md"
             >
               <X className="h-5 w-5" />
             </button>
@@ -2021,7 +2018,7 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
 
         {/* Loading State */}
         {loading && (
-          <div className="flex-1 flex items-center justify-center bg-[#1e1e1e]">
+          <div className="flex-1 flex items-center justify-center bg-gray-50">
             <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500"></div>
           </div>
         )}
@@ -2044,317 +2041,319 @@ async function autoGenerateTitle(sessionId: string, firstMessage: string) {
             )}
 
             {/* Messages (when there are messages) */}
-            {!loading && chatMessages.length > 0 && (
-              // Make sure this container scrolls, not the whole chat window if possible
-              <div className="flex-1 overflow-y-auto p-3 space-y-4 messages-container">
-                {chatMessages.map((msg) => {
-                  // Define variables for each message
-                  const isAssistant = msg.sender !== 'You' && msg.sender !== 'System';
-                  const hasDiffs = isAssistant && msg.diffHunks && msg.diffHunks.length > 0 && !msg.isError;
+{/* Messages (when there are messages) */}
+{!loading && chatMessages.length > 0 && (
+  // --- CHANGE: Lighter scrollbar for messages ---
+  <div className="flex-1 overflow-y-auto p-3 space-y-4 messages-container scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
+    {chatMessages.map((msg) => {
+      const isAssistant = msg.sender !== 'You' && msg.sender !== 'System';
+      const hasDiffs    = isAssistant && msg.diffHunks && msg.diffHunks.length > 0 && !msg.isError;
 
-                  return (
-                    // Use msg.id for the key
-                    <div key={msg.id} className={`flex flex-col ${msg.sender === 'You' ? 'items-end' : 'items-start'} message-container`}>
-                      {/* Sender Badge */}
-                      <div className="text-xs text-gray-400 mb-1 px-1">
-                        {msg.sender === 'You' ? 'You' : msg.sender === 'System' ? 'System' : 'LaTeX Assistant'}
-                      </div>
+      return (
+        <div
+          key={msg.id}
+          className={`flex flex-col ${
+            msg.sender === 'You' ? 'items-end' : 'items-start'
+          } message-container`}
+        >
+          {/* Sender Badge */}
+          {/* --- CHANGE: Adjusted sender text color --- */}
+          <div className="text-xs text-gray-500 mb-1 px-1 font-medium">
+            {msg.sender === 'You'
+              ? 'You'
+              : msg.sender === 'System'
+              ? 'System'
+              : 'Kepler Assistant'}
+          </div>
 
-                      {/* Message Content Bubble */}
-                      <div
-                        className={`max-w-[85%] rounded-lg px-3 py-2 ${msg.sender === 'You' ? 'bg-blue-600/70 text-white' :
-                          msg.isError ? 'bg-red-800/50 border border-red-700/60 text-red-300' :
-                            'bg-gray-700/60 text-gray-200' // Consistent background for assistant/system non-errors
-                          }`}
-                      >
-                        {/* Render main message content (explanation or user text) */}
-                        {renderMessageContent(msg)}
+          {/* Message Content Bubble */}
+          {/* --- CHANGE: Light theme message bubbles --- */}
+          <div
+            className={`max-w-[85%] rounded-lg px-3 py-2 shadow-sm ${
+              msg.sender === 'You'
+                ? 'bg-blue-600 text-white'
+                : msg.isError
+                ? 'bg-red-100 border border-red-200 text-red-800'
+                : 'bg-gray-100 text-gray-800 border border-gray-200'
+            }`}
+          >
+            {renderMessageContent(msg)}
+          </div>
 
-                        {/* Attachments */}
-                        {msg.attachments && msg.attachments.length > 0 && (
-                          <div className="mt-2 space-y-1 border-t border-gray-600/50 pt-1.5">
-                            {msg.attachments.map(file => (
-                              <div key={file.id} className="bg-gray-800/50 rounded px-1.5 py-0.5 flex items-center text-xs">
-                                {getFileIcon(file.type, file.name)}
-                                <span className="text-gray-300 truncate mr-2 flex-1" title={file.name}>{file.name}</span>
-                                <a href={file.url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline ml-auto">View</a>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+          {/* Suggestion Button */}
+          {hasDiffs && (
+            <div className="mt-1.5">
+              <button
+                onClick={() => {
+                  if (onShowSuggestion && msg.diffHunks) {
+                    onShowSuggestion(
+                      msg.diffHunks,
+                      msg.content,
+                      currentFileContent
+                    );
+                  }
+                }}
+                // --- CHANGE: Light theme suggestion button ---
+                className="bg-indigo-100 text-indigo-700 text-xs py-1 px-2 rounded hover:bg-indigo-200 flex items-center shadow-sm border border-indigo-200"
+                title="View AI Suggestion"
+              >
+                <Edit className="h-3 w-3 mr-1" /> View Suggestion
+              </button>
+            </div>
+          )}
 
-                      {/* Suggestion Button - Rendered below the message bubble */}
-                      {hasDiffs && (
-                        <div className="mt-1.5">
-                          <button
-                            onClick={() => {
-                              console.log("[View Suggestion Click] Button clicked for message:", msg.id);
-                              // Ensure original content is available
-                              if (typeof currentFileContent !== 'string') {
-                                console.error("Original content missing!");
-                                alert("Cannot show suggestion: Original file content is missing.");
-                                return;
-                              }
-                              // Call the callback passed from LatexEditor
-                              if (onShowSuggestion && msg.diffHunks) {
-                                onShowSuggestion(
-                                  msg.diffHunks,        // Pass the array of diff strings
-                                  msg.content,          // Pass the explanation
-                                  currentFileContent    // Pass original editor content for overlay display base
-                                );
-                              } else {
-                                console.error("onShowSuggestion callback or msg.diffHunks is missing!");
-                              }
-                            }}
-                            className="bg-blue-600/80 text-white text-xs py-1 px-2 rounded hover:bg-blue-700 flex items-center shadow"
-                            title="View AI Suggestion"
-                          >
-                            <Edit className="h-3 w-3 mr-1" /> View Suggestion
-                          </button>
-                        </div>
-                      )}
+          {/* Timestamp */}
+          {/* --- CHANGE: Adjusted timestamp color --- */}
+          <div className="text-[10px] text-gray-400 mt-1 px-1">
+            {msg.timestamp instanceof Date
+              ? msg.timestamp.toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
+              : '...'}
+          </div>
+        </div>
+      );
+    })}
 
-                      {/* Timestamp */}
-                      <div className="text-[10px] text-gray-500 mt-1 px-1">
-                        {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </div>
-                    </div> // End message container div
-                  );
-                })}
-                {isThinking && <ThinkingIndicator />}
-                <div ref={messagesEndRef} className="h-0" />
-              </div> // End messages container div
-            )}
-            {/* Empty State (when no messages) */}
-            {!loading && chatMessages.length === 0 && (
-              <div className="flex-1 flex flex-col items-center justify-center p-6 text-center overflow-y-auto">
-                <div className="mb-4 bg-gray-700 rounded-full p-4 opacity-60">
-                  <div className="w-16 h-16 flex items-center justify-center">
-                    <MessageSquare className="h-10 w-10 text-white opacity-70" />
-                  </div>
-                </div>
-                <h2 className="text-2xl font-light text-gray-300 mb-2">LaTeX Assistant</h2>
-                <p className="text-gray-400 text-sm max-w-xs mb-6">
-                  Ask me anything about LaTeX. I can help format equations, create tables,
-                  fix errors, and suggest improvements for your document.
-                </p>
+    {/* Thinking Indicator */}
+    {isThinking && <ThinkingIndicator />}
 
-                <div className="bg-gray-800/40 rounded-lg p-5 max-w-xs w-full">
-                  <h3 className="text-sm font-medium text-gray-300 mb-3">Example questions to ask:</h3>
-                  <ul className="space-y-2 text-sm text-left text-gray-400">
-                    <li className="cursor-pointer hover:text-blue-400 transition-colors"
-                      onClick={() => setNewMessage("How do I create a matrix equation in LaTeX?")}>
-                      • How do I create a matrix equation?
-                    </li>
-                    <li className="cursor-pointer hover:text-blue-400 transition-colors"
-                      onClick={() => setNewMessage("What's the syntax for adding citations and references?")}>
-                      • How do I add citations and references?
-                    </li>
-                    <li className="cursor-pointer hover:text-blue-400 transition-colors"
-                      onClick={() => setNewMessage("Can you help me debug this error: Undefined control sequence")}>
-                      • Help me debug a LaTeX error
-                    </li>
-                  </ul>
-                </div>
+    {/* Scroll anchor */}
+    <div ref={messagesEndRef} className="h-0" />
+  </div>
+)}
+{/* Empty State (when no messages) */}
+{!loading && chatMessages.length === 0 && (
+  // --- CHANGE: Light theme empty state ---
+  <div className="flex-1 flex flex-col items-center justify-center p-6 text-center overflow-y-auto bg-gray-50">
+    <div className="mb-4 bg-gray-200 rounded-full p-4"> {/* Lighter BG */}
+      <div className="w-16 h-16 flex items-center justify-center">
+        <MessageSquare className="h-10 w-10 text-gray-400" /> {/* Adjusted color */}
+      </div>
+    </div>
+    <h2 className="text-2xl font-semibold text-gray-800 mb-2">Kepler Assistant</h2> {/* Darker Text */}
+    <p className="text-gray-500 text-sm max-w-xs mb-6"> {/* Darker Text */}
+      Ask me anything about LaTeX...
+    </p>
+    <div className="bg-white border border-gray-200 rounded-lg p-5 max-w-xs w-full shadow-sm"> {/* White Box */}
+      <h3 className="text-sm font-medium text-gray-700 mb-3">Example questions:</h3> {/* Darker Text */}
+      <ul className="space-y-2 text-sm text-left text-gray-600"> {/* Darker Text */}
+        <li
+          className="cursor-pointer hover:text-blue-600 transition-colors"
+          onClick={() => setNewMessage("How do I create a matrix equation?")}
+        >
+          • How do I create a matrix equation?
+        </li>
+        <li
+          className="cursor-pointer hover:text-blue-600 transition-colors"
+          onClick={() => setNewMessage("How do I add citations?")}
+        >
+          • How do I add citations?
+        </li>
+        <li
+          className="cursor-pointer hover:text-blue-600 transition-colors"
+          onClick={() => setNewMessage("Help debug: Undefined control sequence")}
+        >
+          • Help debug an error
+        </li>
+      </ul>
+    </div>
+    <div className="mt-8 flex flex-col space-y-3 text-sm w-full max-w-xs text-gray-500">
+      <div className="flex items-center">
+        <span className="mr-2 font-mono text-blue-600">@</span>
+        Type @ to reference project files
+      </div>
+      <div className="flex items-center">
+        <Paperclip className="h-4 w-4 mr-2 text-gray-400" />
+        Attach images or files for help
+      </div>
+    </div>
+  </div>
+)}
 
-                <div className="mt-8 flex flex-col space-y-3 text-sm w-full max-w-xs opacity-80">
-                  <div className="flex items-center text-blue-400">
-                    <span className="mr-2 font-mono">@</span>
-                    <span>Type @ to reference project files</span>
-                  </div>
-                  <div className="flex items-center text-blue-400">
-                    <Paperclip className="h-4 w-4 mr-2 opacity-70" />
-                    <span>Attach images or files for help</span>
-                  </div>
-                </div>
-              </div>
-            )}
 
           </div> // End Chat Content Area Div
         )}
 
-        {/* Input Area */}
-        {!loading && (
-          <div className="p-4 mt-auto">
-            {/* Current file badge */}
-            {currentFileName && (
-              <div className="flex mb-2">
+{/* --- CHANGE: Light Theme Input Area --- */}
+{!loading && (
+  <div className="p-3 mt-auto border-t border-gray-200 bg-white">
+    {/* Current file badge */}
+    {currentFileName && (
+      <div className="flex mb-2">
+        {/* --- CHANGE: Light theme badge --- */}
+        <div
+          className="inline-flex items-center bg-gray-100 text-gray-600 text-xs rounded px-2 py-1 cursor-pointer hover:bg-gray-200"
+          onClick={() => onFileSelect && currentFileId && onFileSelect(currentFileId)}
+        >
+          <File className="h-3.5 w-3.5 mr-1.5 text-gray-400" />
+          <span className="mr-1 font-medium text-gray-700">{currentFileName}</span>
+          <span className="text-gray-500">(Current)</span>
+        </div>
+      </div>
+    )}
+
+    {/* Upload progress/error (Add light theme styling if implemented) */}
+    {/* ... */}
+
+    {/* Attachments preview */}
+    {attachedFiles.length > 0 && (
+      <div className="mb-2 flex flex-wrap gap-1.5">
+        {attachedFiles.map(file => (
+          // --- CHANGE: Light theme attachment badge ---
+          <div
+            key={file.id}
+            className="bg-gray-100 border border-gray-200 rounded flex items-center pl-1.5 pr-1 py-0.5"
+          >
+            {getFileIcon(file.type)}
+            <span className="text-xs text-gray-700 mr-1 max-w-[150px] truncate">
+              {file.name}
+            </span>
+            <button
+              onClick={() => removeAttachment(file.id)}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {/* Input box */}
+    {/* --- CHANGE: Light theme input container --- */}
+    <div className="bg-white rounded-md border border-gray-300 relative focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500">
+      <form onSubmit={handleSendMessage} className="flex flex-col">
+        <input
+          ref={inputRef}
+          type="text"
+          value={newMessage}
+          onChange={handleInputChange}
+          onKeyDown={handleKeyDown}
+          placeholder="Ask about LaTeX... (Type @ to mention files)"
+          // --- CHANGE: Light theme input text ---
+          className="w-full bg-transparent text-gray-800 py-2 px-3 text-sm focus:outline-none placeholder-gray-400"
+        />
+
+        {/* File mention dropdown */}
+        {showMentionList && filteredMentions.length > 0 && (
+          // --- CHANGE: Light theme mention dropdown ---
+          <div
+            ref={mentionListRef}
+            className="absolute bottom-full left-0 mb-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-y-auto w-64 z-10"
+          >
+            <div className="py-1">
+              {filteredMentions.map((file, index) => (
+                // --- CHANGE: Light theme mention item ---
                 <div
-                  className="inline-flex items-center bg-[#252526] text-gray-300 text-xs rounded px-2 py-1 cursor-pointer hover:bg-[#303031]"
-                  onClick={() => onFileSelect && currentFileId && onFileSelect(currentFileId)}
+                  key={file.id}
+                  onClick={() => insertMention(file)}
+                  className={`px-3 py-2 text-sm flex items-center cursor-pointer ${
+                    index === selectedMentionIndex
+                      ? 'bg-blue-50 text-blue-700'
+                      : 'text-gray-700 hover:bg-gray-100'
+                  }`}
                 >
-                  <File className="h-3.5 w-3.5 mr-1.5 text-gray-400" />
-                  <span className="mr-1">{currentFileName}</span>
-                  <span className="text-gray-500">Current file</span>
+                  {getFileIcon(file.type)}
+                  <span className="truncate">{file.name}</span>
                 </div>
-              </div>
-            )}
-
-            {/* Upload progress and errors */}
-            {Object.keys(uploadProgress).length > 0 && (
-              <div className="mb-2 bg-[#252526] rounded p-2">
-                <div className="flex justify-between text-xs text-gray-400 mb-1">
-                  <span>Uploading files...</span>
-                  <span>
-                    {Object.values(uploadProgress).filter(p => p === 100).length} / {Object.keys(uploadProgress).length}
-                  </span>
-                </div>
-                {Object.entries(uploadProgress).map(([fileName, progress]) => (
-                  <div key={fileName} className="mb-1">
-                    <div className="flex items-center text-xs mb-0.5">
-                      <span className="truncate flex-1 text-gray-400">{fileName}</span>
-                      <span className="text-gray-500 ml-2">
-                        {progress < 0 ? 'Error' : progress === 100 ? 'Complete' : `${progress}%`}
-                      </span>
-                    </div>
-                    <div className="w-full h-1 bg-gray-700 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full ${progress < 0 ? 'bg-red-500' :
-                          progress === 100 ? 'bg-green-500' : 'bg-blue-500'
-                          }`}
-                        style={{ width: `${progress < 0 ? 100 : progress}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Upload error message */}
-            {uploadError && (
-              <div className="mb-2 bg-red-900/20 border border-red-800/50 rounded px-3 py-2 text-xs text-red-400">
-                {uploadError}
-              </div>
-            )}
-
-            {/* Attachments preview */}
-            {attachedFiles.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {attachedFiles.map(file => (
-                  <div key={file.id} className="bg-[#252526] rounded flex items-center pl-2 pr-1 py-1">
-                    <File className="h-3 w-3 mr-1 text-blue-400" />
-                    <span className="text-xs text-gray-300 mr-1 max-w-[150px] truncate">{file.name}</span>
-                    <button
-                      onClick={() => removeAttachment(file.id)}
-                      className="text-gray-500 hover:text-gray-300"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Input box */}
-            <div className="bg-[#252526] rounded-md border border-[#3c3c3c] relative">
-              <form onSubmit={handleSendMessage} className="flex flex-col">
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={newMessage}
-                  onChange={handleInputChange}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Ask about LaTeX... (Type @ to mention files)"
-                  className="w-full bg-transparent text-gray-200 py-2 px-3 text-sm focus:outline-none"
-                />
-
-                {/* File mention dropdown */}
-                {showMentionList && filteredMentions.length > 0 && (
-                  <div
-                    ref={mentionListRef}
-                    className="absolute bottom-full left-0 mb-1 bg-[#252526] border border-[#3c3c3c] rounded-md shadow-lg max-h-60 overflow-y-auto w-64 z-10"
-                  >
-                    <div className="py-1">
-                      {filteredMentions.map((file, index) => (
-                        <div
-                          key={file.id}
-                          onClick={() => insertMention(file)}
-                          className={`px-3 py-2 text-sm flex items-center cursor-pointer ${index === selectedMentionIndex ? 'bg-[#04395e] text-white' : 'text-gray-300 hover:bg-[#2a2d2e]'}`}
-                        >
-                          {file.type === 'folder' ? (
-                            <Folder className="h-4 w-4 mr-2 text-blue-400" />
-                          ) : (
-                            <File className="h-4 w-4 mr-2 text-gray-400" />
-                          )}
-                          <span className="truncate">{file.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Button bar - simplified with just paperclip */}
-                <div className="flex justify-between items-center px-2 py-1.5 border-t border-[#3c3c3c]">
-                  <div>
-                    <button
-                      type="button"
-                      className="p-1 text-gray-500 hover:text-gray-300 rounded"
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      <Paperclip className="h-4 w-4" />
-                      <input
-                        type="file"
-                        ref={fileInputRef}
-                        onChange={handleFileSelect}
-                        className="hidden"
-                        multiple
-                      />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center">
-                    {/* Model selection dropdown - improved design */}
-                    <div className="relative" ref={dropdownRef}>
-                      <button
-                        type="button"
-                        onClick={() => setShowModelDropdown(!showModelDropdown)}
-                        className="mr-2 flex items-center text-xs bg-[#252526] border border-[#3c3c3c] rounded px-2 py-1 hover:bg-[#2d2d2d]"
-                      >
-                        <span>{activeSession?.currentModel.name || AVAILABLE_MODELS[0].name}</span>
-                        <ChevronDown className="h-3 w-3 ml-1.5" />
-                      </button>
-
-                      {/* Improved Dropdown Menu */}
-                      {showModelDropdown && (
-                        <div className="absolute bottom-full right-0 mb-1 bg-[#252526] border border-[#3c3c3c] rounded-md shadow-lg z-10 min-w-[180px]">
-                          <div className="py-1">
-                            {AVAILABLE_MODELS.map(model => (
-                              <button
-                                key={model.id}
-                                type="button"
-                                onClick={() => updateSelectedModel(model)}
-                                className={`w-full text-left px-3 py-2 text-xs flex justify-between items-center ${(activeSession?.currentModel.id || AVAILABLE_MODELS[0].id) === model.id
-                                  ? 'bg-[#04395e] text-white'
-                                  : 'text-gray-300 hover:bg-[#2a2d2e]'
-                                  }`}
-                              >
-                                <span>{model.name}</span>
-                                <span className="text-xs text-gray-500">{model.providerName}</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <button
-                      type="submit"
-                      // Use context activeSessionId for disabled check
-                      disabled={(!newMessage.trim() && attachedFiles.length === 0) || !chatContext.activeSessionId}
-                      className={`p-1 ${(!newMessage.trim() && attachedFiles.length === 0) || !chatContext.activeSessionId
-                        ? 'text-gray-500 cursor-not-allowed'
-                        : 'text-gray-300 hover:text-white'
-                        }`}
-                    >
-                      <Send className="h-5 w-5" />
-                    </button>
-                  </div>
-                </div>
-              </form>
+              ))}
             </div>
           </div>
         )}
+
+        {/* Button bar */}
+        {/* --- CHANGE: Light theme button bar --- */}
+        <div className="flex justify-between items-center px-2 py-1.5 border-t border-gray-200 bg-gray-50 rounded-b-md">
+          <div>
+            {/* Attach button */}
+            <button
+              type="button"
+              className="p-1 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded"
+              onClick={() => fileInputRef.current?.click()}
+              title="Attach file"
+            >
+              <Paperclip className="h-4 w-4" />
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                className="hidden"
+                multiple
+              />
+            </button>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            {/* Model selection dropdown */}
+            <div className="relative" ref={dropdownRef}>
+              <button
+                type="button"
+                onClick={() => setShowModelDropdown(!showModelDropdown)}
+                // --- CHANGE: Light theme model button ---
+                className="flex items-center text-xs bg-white border border-gray-300 rounded px-2 py-1 hover:bg-gray-100 text-gray-700"
+              >
+                <span>
+                  {activeSession?.currentModel.name || AVAILABLE_MODELS[0].name}
+                </span>
+                <ChevronDown className="h-3 w-3 ml-1.5 text-gray-400" />
+              </button>
+              {showModelDropdown && (
+                // --- CHANGE: Light theme model dropdown menu ---
+                <div className="absolute bottom-full right-0 mb-1 bg-white border border-gray-200 rounded-md shadow-lg z-10 min-w-[180px]">
+                  <div className="py-1">
+                    {AVAILABLE_MODELS.map(model => (
+                      // --- CHANGE: Light theme model item ---
+                      <button
+                        key={model.id}
+                        type="button"
+                        onClick={() => updateSelectedModel(model)}
+                        className={`w-full text-left px-3 py-2 text-xs flex justify-between items-center ${
+                          (activeSession?.currentModel.id || AVAILABLE_MODELS[0].id) ===
+                          model.id
+                            ? 'bg-blue-50 text-blue-700'
+                            : 'text-gray-700 hover:bg-gray-100'
+                        }`}
+                      >
+                        <span>{model.name}</span>
+                        <span className="text-xs text-gray-400">
+                          {model.providerName}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Send button */}
+            <button
+              type="submit"
+              disabled={
+                (!newMessage.trim() && attachedFiles.length === 0) ||
+                !chatContext.activeSessionId ||
+                isThinking
+              }
+              // --- CHANGE: Light theme send button ---
+              className={`p-1 rounded ${
+                (!newMessage.trim() && attachedFiles.length === 0) ||
+                !chatContext.activeSessionId ||
+                isThinking
+                  ? 'text-gray-400 cursor-not-allowed'
+                  : 'text-blue-600 hover:text-blue-800 hover:bg-blue-50'
+              }`}
+              title="Send message"
+            >
+              <Send className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+)}
+
       </ResizablePanel>
     </div>
   );

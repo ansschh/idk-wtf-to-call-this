@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Download, AlertCircle, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
+import { Download, AlertCircle, ZoomIn, ZoomOut, RotateCw, Loader, X } from 'lucide-react';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
@@ -11,8 +11,8 @@ interface ImagePreviewProps {
   projectId: string;
 }
 
-const ImagePreview: React.FC<ImagePreviewProps> = ({ 
-  filename, 
+const ImagePreview: React.FC<ImagePreviewProps> = ({
+  filename,
   fileId,
   projectId
 }) => {
@@ -23,249 +23,206 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   const [rotation, setRotation] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Fetch the image data from Firestore
   useEffect(() => {
     const fetchImageData = async () => {
       try {
         setIsLoading(true);
         setError(null);
-        console.log(`Looking for image data for file: ${filename}, ID: ${fileId}`);
-        
-        // Try both collection names since there might be inconsistency
+
         const possibleCollections = ["projectFiles", "project_files"];
-        let fileData = null;
-        let foundDoc = false;
-        
-        // First try direct document lookup in both collections
-        for (const collectionName of possibleCollections) {
+        let fileData: any = null;
+        let found = false;
+
+        for (const coll of possibleCollections) {
           try {
-            console.log(`Trying direct lookup in collection: ${collectionName}`);
-            const fileDoc = await getDoc(doc(db, collectionName, fileId));
-            if (fileDoc.exists()) {
-              fileData = fileDoc.data();
-              foundDoc = true;
-              console.log(`Found file document in collection: ${collectionName}`, fileData);
+            const docSnap = await getDoc(doc(db, coll, fileId));
+            if (docSnap.exists()) {
+              fileData = docSnap.data();
+              found = true;
               break;
             }
-          } catch (err) {
-            console.log(`Document not found in ${collectionName}`);
-          }
+          } catch { /* continue */ }
         }
-        
-        // If direct lookup fails, try querying by project ID and filename
-        if (!foundDoc) {
-          console.log("Direct document lookup failed, trying query by projectId and filename");
-          for (const collectionName of possibleCollections) {
-            try {
-              const filesQuery = query(
-                collection(db, collectionName),
-                where("projectId", "==", projectId),
-                where("_name_", "==", filename)
-              );
-              
-              const querySnapshot = await getDocs(filesQuery);
-              if (!querySnapshot.empty) {
-                const doc = querySnapshot.docs[0];
-                fileData = doc.data();
-                foundDoc = true;
-                console.log(`Found file by query in collection: ${collectionName}`, fileData);
-                break;
-              }
-            } catch (err) {
-              console.log(`Query failed in ${collectionName}:`, err);
+
+        if (!found) {
+          for (const coll of possibleCollections) {
+            const q = query(
+              collection(db, coll),
+              where("projectId", "==", projectId),
+              where("_name_", "==", filename)
+            );
+            const snap = await getDocs(q);
+            if (!snap.empty) {
+              fileData = snap.docs[0].data();
+              found = true;
+              break;
             }
           }
         }
-        
-        if (!foundDoc || !fileData) {
-          console.error(`File document not found for ID: ${fileId}`);
-          setError(`File not found. Please check if the file exists in the project.`);
-          setIsLoading(false);
+
+        if (!found || !fileData) {
+          setError("File not found. Please check the project.");
           return;
         }
-        
-        console.log("File data fields:", Object.keys(fileData));
-        
-        // Check every possible field that might contain image data
+
         if (fileData.dataUrl) {
-          console.log("Using dataUrl field");
           setImageUrl(fileData.dataUrl);
         } else if (fileData.downloadURL) {
-          console.log("Using downloadURL field");
           setImageUrl(fileData.downloadURL);
-        } else if (fileData.url) {
-          console.log("Using url field");
-          setImageUrl(fileData.url);
-        } else if (fileData.content && typeof fileData.content === 'string') {
-          // Check if content is a data URL
+        } else if (typeof fileData.content === 'string') {
           if (fileData.content.startsWith('data:image')) {
-            console.log("Using content field with data:image prefix");
             setImageUrl(fileData.content);
-          } 
-          // Check if content is a base64 string (without data:image prefix)
-          else if (fileData.content.match(/^[A-Za-z0-9+/=]+$/)) {
-            console.log("Using content field as base64 data");
-            // Determine image type from filename
-            let mimeType = 'image/jpeg'; // Default
-            if (filename.toLowerCase().endsWith('.png')) mimeType = 'image/png';
-            else if (filename.toLowerCase().endsWith('.gif')) mimeType = 'image/gif';
-            else if (filename.toLowerCase().endsWith('.svg')) mimeType = 'image/svg+xml';
-            else if (filename.toLowerCase().endsWith('.webp')) mimeType = 'image/webp';
-            
-            setImageUrl(`data:${mimeType};base64,${fileData.content}`);
-          }
-        } else {
-          // As a last resort, try to find any field with a data URL pattern or URL
-          const foundField = Object.entries(fileData).find(([key, value]) => 
-            typeof value === 'string' && 
-            (
-              (value as string).startsWith('data:image') || 
-              ((value as string).startsWith('http') && 
-              /\.(jpg|jpeg|png|gif|svg|webp)/.test(value as string))
-            )
-          );
-          
-          if (foundField) {
-            console.log(`Found image data in field: ${foundField[0]}`);
-            setImageUrl(foundField[1] as string);
-          } else {
-            console.error("No image data found in any field");
-            setError("No image data found in file document. The file may not be a valid image or may be corrupted.");
+          } else if (/^[A-Za-z0-9+/=]+$/.test(fileData.content)) {
+            let mime = 'image/jpeg';
+            const ext = filename.toLowerCase().split('.').pop();
+            if (ext === 'png') mime = 'image/png';
+            else if (ext === 'gif') mime = 'image/gif';
+            else if (ext === 'webp') mime = 'image/webp';
+            else if (ext === 'svg') mime = 'image/svg+xml';
+            setImageUrl(`data:${mime};base64,${fileData.content}`);
           }
         }
-      } catch (err) {
-        console.error("Error fetching image:", err);
-        setError(`Failed to fetch image data: ${err instanceof Error ? err.message : String(err)}`);
+
+        if (!imageUrl && !error) {
+          const field = Object.entries(fileData).find(([_, v]) =>
+            typeof v === 'string' && ((v as string).startsWith('data:image') || (/^https?:.*\.(jpg|jpeg|png|gif|svg|webp)$/i.test(v)))
+          );
+          if (field) setImageUrl(field[1] as string);
+          else setError("No image data found. The file may not be a valid image.");
+        }
+      } catch (e: any) {
+        setError(`Failed to fetch image: ${e.message || e}`);
       } finally {
         setIsLoading(false);
       }
     };
-    
-    if (fileId) {
-      fetchImageData();
-    }
+    if (fileId) fetchImageData();
   }, [fileId, filename, projectId]);
 
-  // Handle zoom in
-  const handleZoomIn = () => {
-    setZoom(prevZoom => Math.min(prevZoom + 25, 300));
-  };
-
-  // Handle zoom out
-  const handleZoomOut = () => {
-    setZoom(prevZoom => Math.max(prevZoom - 25, 50));
-  };
-
-  // Handle rotation
-  const handleRotate = () => {
-    setRotation(prevRotation => (prevRotation + 90) % 360);
-  };
-
-  // Function to trigger image download
+  const handleZoomIn = () => setZoom(z => Math.min(z + 25, 300));
+  const handleZoomOut = () => setZoom(z => Math.max(z - 25, 50));
+  const handleRotate = () => setRotation(r => (r + 90) % 360);
   const handleDownload = () => {
     if (!imageUrl) return;
-    
-    // Create an anchor element and trigger download
-    const link = document.createElement('a');
-    link.href = imageUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const a = document.createElement('a');
+    a.href = imageUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   return (
-    <div className="h-full flex flex-col bg-gray-900" ref={containerRef}>
-      {/* Header with filename and controls */}
-      <div className="bg-gray-800 p-2 flex justify-between items-center border-b border-gray-700">
-        <div className="text-gray-200 font-medium truncate">{filename}</div>
-        <div className="flex items-center space-x-2">
+    <div className="h-full flex flex-col bg-white" ref={containerRef}>
+      <div className="bg-white p-2 flex justify-between items-center border-b border-gray-200 shadow-sm flex-shrink-0">
+        <div
+          className="text-gray-800 font-medium text-sm truncate"
+          title={filename}
+        >
+          {filename}
+        </div>
+        <div className="flex items-center space-x-1">
           <button
             onClick={handleZoomOut}
-            disabled={zoom <= 50 || !imageUrl}
-            className={`p-1.5 rounded ${!imageUrl || zoom <= 50 ? 'text-gray-600' : 'text-gray-300 hover:bg-gray-700'}`}
+            disabled={!imageUrl || zoom <= 50}
+            className={`p-1.5 rounded ${
+              !imageUrl || zoom <= 50
+                ? 'text-gray-400 cursor-not-allowed'
+                : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+            }`}
             title="Zoom out"
           >
             <ZoomOut className="h-4 w-4" />
           </button>
-          
-          <span className="text-xs text-gray-300 mx-1">{zoom}%</span>
-          
+          <span className="text-xs text-gray-600 font-medium mx-1 w-10 text-center">
+            {zoom}%
+          </span>
           <button
             onClick={handleZoomIn}
-            disabled={zoom >= 300 || !imageUrl}
-            className={`p-1.5 rounded ${!imageUrl || zoom >= 300 ? 'text-gray-600' : 'text-gray-300 hover:bg-gray-700'}`}
+            disabled={!imageUrl || zoom >= 300}
+            className={`p-1.5 rounded ${
+              !imageUrl || zoom >= 300
+                ? 'text-gray-400 cursor-not-allowed'
+                : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+            }`}
             title="Zoom in"
           >
             <ZoomIn className="h-4 w-4" />
           </button>
-          
           <button
             onClick={handleRotate}
             disabled={!imageUrl}
-            className={`p-1.5 rounded ${!imageUrl ? 'text-gray-600' : 'text-gray-300 hover:bg-gray-700'}`}
+            className={`p-1.5 rounded ${
+              !imageUrl
+                ? 'text-gray-400 cursor-not-allowed'
+                : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+            }`}
             title="Rotate"
           >
             <RotateCw className="h-4 w-4" />
           </button>
-          
-          <div className="w-px h-4 bg-gray-700 mx-1"></div>
-          
+          <div className="w-px h-4 bg-gray-300 mx-2" />
           <button
             onClick={handleDownload}
             disabled={!imageUrl}
-            className={`px-3 py-1 rounded flex items-center ${
-              imageUrl 
-                ? "bg-blue-600 hover:bg-blue-700 text-white" 
-                : "bg-gray-700 text-gray-500 cursor-not-allowed"
+            className={`flex items-center px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 shadow-sm border focus:outline-none focus:ring-2 focus:ring-offset-1 ${
+              !imageUrl
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border-gray-200'
+                : 'bg-white text-gray-600 hover:bg-gray-50 border-gray-300 hover:border-gray-400 focus:ring-indigo-500'
             }`}
             title="Download image"
           >
-            <Download className="h-4 w-4 mr-1" />
-            Download
+            <Download className="h-4 w-4 mr-1.5" />
+            <span className="hidden sm:inline">Download</span>
           </button>
         </div>
       </div>
 
-      {/* Image content */}
-      <div className="flex-1 overflow-auto bg-gray-900 flex items-center justify-center p-4">
+      <div className="flex-1 overflow-auto bg-gray-100 flex items-center justify-center p-4">
         {isLoading ? (
           <div className="flex flex-col items-center justify-center">
-            <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-blue-500"></div>
-            <p className="mt-4 text-gray-400">Loading image...</p>
+            <Loader className="h-8 w-8 text-blue-500 animate-spin mb-3" />
+            <p className="text-gray-600">Loading image...</p>
           </div>
         ) : error ? (
-          <div className="bg-red-900/30 border border-red-800 rounded-lg p-6 max-w-md text-center">
-            <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-red-400 mb-2">Error Loading Image</h3>
-            <p className="text-red-300 mb-4">{error}</p>
-            <p className="text-gray-400 text-sm">
-              This may happen if the image was not properly saved in the database or if 
-              the file format is not supported.
+          <div className="bg-red-50 border border-red-200 rounded-lg p-6 max-w-md text-center shadow-sm">
+            <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <AlertCircle className="h-6 w-6 text-red-500" />
+            </div>
+            <h3 className="text-lg font-medium text-red-700 mb-2">
+              Error Loading Image
+            </h3>
+            <p className="text-red-600 text-sm mb-4">{error}</p>
+            <p className="text-gray-500 text-xs">
+              Check if the file exists and is a supported image format.
             </p>
           </div>
         ) : imageUrl ? (
-          <div className="relative inline-flex items-center justify-center max-w-full max-h-full">
+          <div className="relative inline-flex items-center justify-center max-w-full max-h-full p-2 bg-white shadow rounded">
             <img
               src={imageUrl}
               alt={filename}
-              className="object-contain max-w-full max-h-full"
-              style={{ 
-                transform: `scale(${zoom/100}) rotate(${rotation}deg)`,
-                transition: 'transform 0.3s ease'
+              className="object-contain max-w-full max-h-full block"
+              style={{
+                transform: `scale(${zoom / 100}) rotate(${rotation}deg)`,
+                transition: 'transform 0.2s ease-out'
               }}
-              onError={(e) => {
+              onError={e => {
                 console.error("Image failed to load:", e);
-                setError("Failed to display image: Invalid image format or URL");
+                setError("Failed to display image: Invalid format or URL");
               }}
             />
           </div>
         ) : (
-          <div className="bg-yellow-900/30 border border-yellow-800 rounded-lg p-6 max-w-md text-center">
-            <AlertCircle className="h-12 w-12 text-yellow-500 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-yellow-400 mb-2">No Image Data Found</h3>
-            <p className="text-yellow-300">
-              The file exists but doesn't contain image data.
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 max-w-md text-center shadow-sm">
+            <div className="w-12 h-12 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <AlertCircle className="h-6 w-6 text-yellow-500" />
+            </div>
+            <h3 className="text-lg font-medium text-yellow-700 mb-2">
+              No Image Data
+            </h3>
+            <p className="text-yellow-600 text-sm">
+              The file exists but doesn't contain displayable image data.
             </p>
           </div>
         )}

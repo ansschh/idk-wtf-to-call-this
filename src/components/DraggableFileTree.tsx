@@ -730,8 +730,7 @@ const DraggableFileTreeContent: React.FC<DraggableFileTreeProps> = ({
           rootRef.current = el;
           rootDrop(el);
         }}
-        className={`flex-1 h-full overflow-auto px-2 py-2 ${isRootOver && canDropOnRoot ? 'bg-gray-800/60 border-2 border-dashed border-blue-500/50' : ''
-          }`}
+        className={`flex-1 h-full overflow-auto px-2 py-2 ${isRootOver && canDropOnRoot ? 'bg-gray-100 border-2 border-dashed border-blue-400' : ''}`}
       >
         {/* Empty state message when no files */}
         {files.length === 0 && (
@@ -760,25 +759,43 @@ const DraggableFileTreeContent: React.FC<DraggableFileTreeProps> = ({
         {contextMenu && contextMenu.item && (
           <div
             ref={contextMenuRef}
-            className="fixed bg-gray-800 border border-gray-700 rounded shadow-lg py-1 z-50"
+            // --- CHANGE: Apply container styles ---
+            className="fixed bg-white border border-gray-200 rounded-md shadow-lg py-1 z-50 min-w-[160px]" // Container styles
             style={{
-              left: contextMenu.x,
-              top: contextMenu.y,
-              minWidth: '160px'
+              left: contextMenu.x, // Position from state
+              top: contextMenu.y,  // Position from state
             }}
           >
+            {/* Rename Button */}
             <button
-              className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-700 flex items-center text-gray-200"
-              onClick={handleRename}
+              // --- CHANGE: Light theme button styles ---
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100 flex items-center text-gray-700"
+              onClick={() => {
+                // Assuming handleStartRename exists to trigger the input field
+                handleStartRename(contextMenu.item.id, contextMenu.item.name);
+                setContextMenu(null); // Close menu
+              }}
             >
-              <Edit className="h-3.5 w-3.5 mr-2 text-gray-400" />
+              {/* --- CHANGE: Light theme icon color & correct icon --- */}
+              <Edit2 className="h-4 w-4 mr-2 text-gray-500" />
               Rename
             </button>
+
+            {/* --- CHANGE: Add Separator --- */}
+            <div className="border-t border-gray-200 my-1 mx-2"></div>
+
+            {/* Delete Button */}
             <button
-              className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-700 flex items-center text-red-400"
-              onClick={handleDelete}
+              // --- CHANGE: Light theme delete button styles ---
+              className="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 flex items-center"
+              onClick={() => {
+                 // Assuming handleDeleteItem exists
+                 handleDeleteItem(contextMenu.item.id, contextMenu.item.type);
+                 setContextMenu(null); // Close menu
+               }}
             >
-              <Trash className="h-3.5 w-3.5 mr-2 text-red-400" />
+              {/* --- CHANGE: Light theme icon color & correct icon --- */}
+              <Trash2 className="h-4 w-4 mr-2" />
               Delete
             </button>
           </div>

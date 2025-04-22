@@ -1,33 +1,35 @@
-// components/EditableProjectName.tsx
+// --- START OF UPDATED FILE EditableProjectName.tsx ---
+
 import React, { useState, useEffect, useRef } from 'react';
-import { Edit2, Check, X } from 'lucide-react';
+import { Edit2, Check, X, Loader } from 'lucide-react'; // Added Loader
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
 interface EditableProjectNameProps {
   projectId: string;
   initialTitle: string;
-  showUnsavedIndicator?: boolean;
+  // showUnsavedIndicator prop removed - handled in parent component now
   onTitleChange?: (newTitle: string) => void;
+  className?: string; // Keep className to allow parent styling
 }
 
 const EditableProjectName: React.FC<EditableProjectNameProps> = ({
   projectId,
   initialTitle,
-  showUnsavedIndicator = false,
-  onTitleChange
+  onTitleChange,
+  className = "font-medium text-gray-800 text-base" // Default light theme style
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(initialTitle || 'Untitled Project');
   const [isSaving, setIsSaving] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Update title when initialTitle prop changes
+  // Update local title if the initial prop changes (e.g., after fetch)
   useEffect(() => {
-    if (initialTitle) {
+    if (initialTitle && !isEditing) { // Only update if not currently editing
       setTitle(initialTitle);
     }
-  }, [initialTitle]);
+  }, [initialTitle, isEditing]);
 
   // Auto-focus input when editing starts
   useEffect(() => {
@@ -37,43 +39,52 @@ const EditableProjectName: React.FC<EditableProjectNameProps> = ({
     }
   }, [isEditing]);
 
-  const startEditing = () => {
+  const startEditing = (e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent potential parent click events
+    setTitle(initialTitle || 'Untitled Project'); // Start editing with the current saved title
     setIsEditing(true);
   };
 
   const cancelEditing = () => {
-    setTitle(initialTitle || 'Untitled Project');
+    setTitle(initialTitle || 'Untitled Project'); // Revert to saved title
     setIsEditing(false);
   };
 
   const saveTitle = async () => {
-    if (!title.trim() || !projectId) {
-      cancelEditing();
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle || !projectId || trimmedTitle === initialTitle) {
+      setIsEditing(false); // Close editing even if no change or invalid
+      if (trimmedTitle !== initialTitle) {
+         setTitle(initialTitle || 'Untitled Project'); // Revert if invalid and different
+      }
       return;
     }
 
+    setIsSaving(true);
     try {
-      setIsSaving(true);
-      
-      // Update the project title in Firestore
       const projectRef = doc(db, "projects", projectId);
       await updateDoc(projectRef, {
-        title: title.trim(),
+        title: trimmedTitle,
         lastModified: serverTimestamp()
       });
-      
-      // Notify parent component
+
       if (onTitleChange) {
-        onTitleChange(title.trim());
+        onTitleChange(trimmedTitle); // Notify parent of the successfully saved title
       }
-      
+      // The initialTitle prop will update via parent state/fetch, triggering useEffect
       setIsEditing(false);
+      // Optionally show success notification via parent or context
+      // showNotification("Project name updated!");
+
     } catch (error) {
       console.error("Error updating project title:", error);
-      // Revert to original title on error
+      // Revert input to original title on error
       setTitle(initialTitle || 'Untitled Project');
+       // Optionally show error notification via parent or context
+      // showNotification("Failed to update project name.", "error");
     } finally {
       setIsSaving(false);
+      setIsEditing(false); // Ensure editing is closed even on error
     }
   };
 
@@ -88,14 +99,13 @@ const EditableProjectName: React.FC<EditableProjectNameProps> = ({
   };
 
   return (
-    <div className="flex items-center">
+    // --- CHANGE: Container uses passed className ---
+    <div className={`flex items-center group ${className}`}>
       {isEditing ? (
-        <form 
-          onSubmit={(e) => {
-            e.preventDefault();
-            saveTitle();
-          }}
-          className="flex items-center"
+        // --- CHANGE: Form styling ---
+        <form
+          onSubmit={(e) => { e.preventDefault(); saveTitle(); }}
+          className="flex items-center bg-white rounded-md border border-blue-400 shadow-sm ring-1 ring-blue-400" // Add visual separation while editing
         >
           <input
             ref={inputRef}
@@ -104,36 +114,44 @@ const EditableProjectName: React.FC<EditableProjectNameProps> = ({
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={isSaving}
-            className="bg-gray-700 text-white border border-gray-600 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[180px]"
+            // --- CHANGE: Light theme input ---
+            className="flex-grow bg-transparent text-gray-900 px-2 py-1 text-base focus:outline-none min-w-[180px]"
             placeholder="Project Name"
           />
+           {/* --- CHANGE: Light theme Save/Cancel buttons --- */}
           <button
             type="submit"
-            disabled={isSaving}
-            className="ml-2 p-1 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Save"
+            disabled={isSaving || !title.trim() || title.trim() === initialTitle} // Disable if saving or no change/empty
+            className={`p-1.5 rounded-r-md transition-colors ${
+              isSaving || !title.trim() || title.trim() === initialTitle
+                ? 'bg-gray-100 text-gray-400'
+                : 'bg-green-500 text-white hover:bg-green-600'
+            }`}
+            title="Save (Enter)"
           >
-            <Check className="h-4 w-4" />
+            {isSaving ? <Loader className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
           </button>
           <button
             type="button"
             onClick={cancelEditing}
             disabled={isSaving}
-            className="ml-1 p-1 bg-gray-600 text-white rounded hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Cancel"
+            className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full mx-1 disabled:opacity-50"
+            title="Cancel (Esc)"
           >
             <X className="h-4 w-4" />
           </button>
         </form>
       ) : (
+        // --- CHANGE: Displayed title styling ---
         <div className="flex items-center">
-          <h1 className="font-medium text-gray-200 text-lg truncate max-w-xs">
+          {/* Use className prop for base styling, allow overrides */}
+          <h1 className={`truncate max-w-xs ${className}`} title={title}>
             {title}
-            {showUnsavedIndicator && <span className="ml-2 text-yellow-500 text-lg">•</span>}
           </h1>
+           {/* Edit Button - visible on hover */}
           <button
             onClick={startEditing}
-            className="ml-2 p-1 text-gray-400 hover:text-white rounded-full hover:bg-gray-700"
+            className="ml-1.5 p-1 text-gray-400 hover:text-gray-700 rounded-full hover:bg-gray-100 opacity-0 group-hover:opacity-100 transition-opacity"
             title="Edit Project Name"
           >
             <Edit2 className="h-4 w-4" />
@@ -145,3 +163,4 @@ const EditableProjectName: React.FC<EditableProjectNameProps> = ({
 };
 
 export default EditableProjectName;
+// --- END OF UPDATED FILE EditableProjectName.tsx ---
