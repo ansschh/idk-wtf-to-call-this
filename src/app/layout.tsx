@@ -30,6 +30,10 @@ export default function RootLayout({
       signUpUrl="/sign-up"
       afterSignInUrl="/dashboard"
       afterSignUpUrl="/dashboard"
+      __experimentalOptions={{ 
+        signUpForceRedirect: true // disables popup-based sign up in dev
+      }}
+    
     >
       <html lang="en">
         <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
