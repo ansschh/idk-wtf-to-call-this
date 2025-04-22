@@ -5,6 +5,7 @@ import { doc, getDoc, updateDoc, serverTimestamp, collection, addDoc, getDocs, q
 import { db, storage } from "@/lib/firebase";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { authenticateWithFirebase } from "@/lib/firebase-auth";
+import EditorLoadingScreen from './EditorLoadingScreen';
 import ChatWindow from './ChatWindow'; // Use the correct path
 import ReactDOM from 'react-dom';
 import chatService from '@/services/chatService'; // Import chatService
@@ -66,148 +67,148 @@ const editorExtensions = [
 
     // --- UPDATED: Search Panel Styles ---
     ".cm-search": {
-        backgroundColor: "#ffffff",
-        borderTop: "1px solid #e5e7eb",
-        padding: "8px 12px", // Slightly more padding
-        display: "flex",
-        alignItems: "center",
-        gap: "10px", // Increased gap
-        color: "#374151",
-        flexWrap: "wrap",
-        minHeight: "42px", // Adjusted height
+      backgroundColor: "#ffffff",
+      borderTop: "1px solid #e5e7eb",
+      padding: "8px 12px", // Slightly more padding
+      display: "flex",
+      alignItems: "center",
+      gap: "10px", // Increased gap
+      color: "#374151",
+      flexWrap: "wrap",
+      minHeight: "42px", // Adjusted height
     },
-     ".cm-search > .cm-textfield": {
-       flexGrow: 1,
-       flexShrink: 1,
-       minWidth: '120px',
-     },
-     ".cm-search > label": {
-        fontSize: "0.875rem",
-        marginRight: "4px",
-        whiteSpace: 'nowrap',
-        flexShrink: 0,
-     },
+    ".cm-search > .cm-textfield": {
+      flexGrow: 1,
+      flexShrink: 1,
+      minWidth: '120px',
+    },
+    ".cm-search > label": {
+      fontSize: "0.875rem",
+      marginRight: "4px",
+      whiteSpace: 'nowrap',
+      flexShrink: 0,
+    },
     ".cm-textfield": { // Inputs
-        backgroundColor: "#ffffff", // White background
-        border: "1px solid #d1d5db", // border-gray-300
-        borderRadius: "0.375rem", // rounded-md
-        padding: "6px 10px", // Adjusted padding
-        fontSize: "0.875rem",
-        color: "#111827",
-        height: "34px", // Set explicit height
-        boxSizing: 'border-box',
+      backgroundColor: "#ffffff", // White background
+      border: "1px solid #d1d5db", // border-gray-300
+      borderRadius: "0.375rem", // rounded-md
+      padding: "6px 10px", // Adjusted padding
+      fontSize: "0.875rem",
+      color: "#111827",
+      height: "34px", // Set explicit height
+      boxSizing: 'border-box',
     },
     ".cm-textfield:focus": {
-        borderColor: "#2563eb", // border-blue-600
-        boxShadow: "0 0 0 2px rgba(59, 130, 246, 0.3)", // ring-2 ring-blue-300/30
-        outline: "none",
+      borderColor: "#2563eb", // border-blue-600
+      boxShadow: "0 0 0 2px rgba(59, 130, 246, 0.3)", // ring-2 ring-blue-300/30
+      outline: "none",
     },
 
-     // --- UPDATED: Materialistic Button Styles ---
+    // --- UPDATED: Materialistic Button Styles ---
     ".cm-button": {
-        backgroundColor: "#ffffff", // White background
-        color: "#374151", // text-gray-700 - Default text
-        border: "1px solid #d1d5db", // border-gray-300
-        borderRadius: "0.375rem", // rounded-md
-        padding: "0 12px", // Horizontal padding
-        fontSize: "0.875rem", // text-sm
-        fontWeight: "500", // font-medium
-        cursor: "pointer",
-        transition: "background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease",
-        marginLeft: "4px",
-        height: "34px", // Match input height
-        boxSizing: 'border-box',
-        display: 'inline-flex', // Align icon/text if needed
-        alignItems: 'center', // Align icon/text if needed
-        justifyContent: 'center', // Center content
-        flexShrink: 0,
-        whiteSpace: 'nowrap',
-        userSelect: 'none', // Prevent text selection on click
-        boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.03), 0 1px 1px 0 rgba(0,0,0,0.03)", // Subtle shadow
+      backgroundColor: "#ffffff", // White background
+      color: "#374151", // text-gray-700 - Default text
+      border: "1px solid #d1d5db", // border-gray-300
+      borderRadius: "0.375rem", // rounded-md
+      padding: "0 12px", // Horizontal padding
+      fontSize: "0.875rem", // text-sm
+      fontWeight: "500", // font-medium
+      cursor: "pointer",
+      transition: "background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease",
+      marginLeft: "4px",
+      height: "34px", // Match input height
+      boxSizing: 'border-box',
+      display: 'inline-flex', // Align icon/text if needed
+      alignItems: 'center', // Align icon/text if needed
+      justifyContent: 'center', // Center content
+      flexShrink: 0,
+      whiteSpace: 'nowrap',
+      userSelect: 'none', // Prevent text selection on click
+      boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.03), 0 1px 1px 0 rgba(0,0,0,0.03)", // Subtle shadow
     },
     ".cm-button:hover": {
-        backgroundColor: "#f9fafb", // bg-gray-50 - Subtle hover
-        borderColor: "#adb5bd", // Slightly darker border
-        color: "#1f2937", // text-gray-800
+      backgroundColor: "#f9fafb", // bg-gray-50 - Subtle hover
+      borderColor: "#adb5bd", // Slightly darker border
+      color: "#1f2937", // text-gray-800
     },
     ".cm-button:active": {
-        backgroundColor: "#f3f4f6", // bg-gray-100 - Pressed state
-        boxShadow: "inset 0 1px 2px 0 rgba(0, 0, 0, 0.05)", // Inset shadow when pressed
+      backgroundColor: "#f3f4f6", // bg-gray-100 - Pressed state
+      boxShadow: "inset 0 1px 2px 0 rgba(0, 0, 0, 0.05)", // Inset shadow when pressed
     },
     ".cm-button:focus-visible": { // Keyboard focus indication
-        outline: 'none',
-        borderColor: "#2563eb", // border-blue-600
-        boxShadow: "0 0 0 2px rgba(59, 130, 246, 0.3)", // Ring effect
+      outline: 'none',
+      borderColor: "#2563eb", // border-blue-600
+      boxShadow: "0 0 0 2px rgba(59, 130, 246, 0.3)", // Ring effect
     },
     ".cm-button:disabled": {
-        backgroundColor: "#f3f4f6", // bg-gray-100
-        color: "#9ca3af", // text-gray-400
-        borderColor: "#e5e7eb", // border-gray-200
-        cursor: "not-allowed",
-        boxShadow: 'none',
-        opacity: 0.7,
+      backgroundColor: "#f3f4f6", // bg-gray-100
+      color: "#9ca3af", // text-gray-400
+      borderColor: "#e5e7eb", // border-gray-200
+      cursor: "not-allowed",
+      boxShadow: 'none',
+      opacity: 0.7,
     },
-     // Group for checkboxes
-     ".cm-search > div:has(input[type=checkbox])": {
-       display: 'flex',
-       alignItems: 'center',
-       gap: '10px', // Space between checkboxes
-       marginLeft: 'auto', // Push checkboxes towards the right (if space allows)
-       flexWrap: 'nowrap', // Prevent checkboxes themselves wrapping individually
-       flexShrink: 0,
-     },
+    // Group for checkboxes
+    ".cm-search > div:has(input[type=checkbox])": {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '10px', // Space between checkboxes
+      marginLeft: 'auto', // Push checkboxes towards the right (if space allows)
+      flexWrap: 'nowrap', // Prevent checkboxes themselves wrapping individually
+      flexShrink: 0,
+    },
     ".cm-search label": { // General label styling (includes checkbox labels)
-       display: 'flex',
-       alignItems: 'center',
-       fontSize: "0.8rem",
-       cursor: 'pointer',
-       userSelect: 'none',
-       color: '#4b5563',
-       whiteSpace: 'nowrap',
+      display: 'flex',
+      alignItems: 'center',
+      fontSize: "0.8rem",
+      cursor: 'pointer',
+      userSelect: 'none',
+      color: '#4b5563',
+      whiteSpace: 'nowrap',
     },
-     ".cm-search input[type=checkbox]": {
-       marginRight: '4px',
-       height: '14px',
-       width: '14px',
-       cursor: 'pointer',
-       appearance: 'none',
-       border: '1px solid #d1d5db',
-       borderRadius: '3px',
-       verticalAlign: 'middle', // Align checkbox better with text
-       position: 'relative', // Needed for custom checkmark
-       top: '-1px', // Fine-tune vertical alignment
-     },
-     ".cm-search input[type=checkbox]:checked": {
-        backgroundColor: '#2563eb',
-        borderColor: '#2563eb',
-        backgroundImage: `url("data:image/svg+xml,%3csvg viewBox='0 0 16 16' fill='white' xmlns='http://www.w3.org/2000/svg'%3e%3cpath d='M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z'/%3e%3c/svg%3e")`,
-        backgroundSize: '100% 100%',
-        backgroundPosition: 'center',
-        backgroundRepeat: 'no-repeat',
-     },
-     ".cm-search input[type=checkbox]:focus": {
-        outline: 'none',
-        boxShadow: "0 0 0 2px rgba(59, 130, 246, 0.4)", // Focus ring like Tailwind
-     },
+    ".cm-search input[type=checkbox]": {
+      marginRight: '4px',
+      height: '14px',
+      width: '14px',
+      cursor: 'pointer',
+      appearance: 'none',
+      border: '1px solid #d1d5db',
+      borderRadius: '3px',
+      verticalAlign: 'middle', // Align checkbox better with text
+      position: 'relative', // Needed for custom checkmark
+      top: '-1px', // Fine-tune vertical alignment
+    },
+    ".cm-search input[type=checkbox]:checked": {
+      backgroundColor: '#2563eb',
+      borderColor: '#2563eb',
+      backgroundImage: `url("data:image/svg+xml,%3csvg viewBox='0 0 16 16' fill='white' xmlns='http://www.w3.org/2000/svg'%3e%3cpath d='M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z'/%3e%3c/svg%3e")`,
+      backgroundSize: '100% 100%',
+      backgroundPosition: 'center',
+      backgroundRepeat: 'no-repeat',
+    },
+    ".cm-search input[type=checkbox]:focus": {
+      outline: 'none',
+      boxShadow: "0 0 0 2px rgba(59, 130, 246, 0.4)", // Focus ring like Tailwind
+    },
     ".cm-search-match": {
-        backgroundColor: "rgba(253, 224, 71, 0.4)" // bg-yellow-200/40 more visible yellow
-     },
-      ".cm-search-match-selected": {
-        backgroundColor: "rgba(249, 115, 22, 0.5)" // bg-orange-500/50 more visible orange
-     },
-     // Close button specific styling if needed
-     ".cm-search > button[name='close']": {
-         marginLeft: 'auto', // Push close button to the far right
-         padding: '5px', // Make it smaller padding
-         border: 'none',
-         background: 'transparent',
-         boxShadow: 'none',
-         color: '#6b7280', // text-gray-500
-     },
-     ".cm-search > button[name='close']:hover": {
-         background: '#f3f4f6', // bg-gray-100
-         color: '#1f2937', // text-gray-800
-     }
+      backgroundColor: "rgba(253, 224, 71, 0.4)" // bg-yellow-200/40 more visible yellow
+    },
+    ".cm-search-match-selected": {
+      backgroundColor: "rgba(249, 115, 22, 0.5)" // bg-orange-500/50 more visible orange
+    },
+    // Close button specific styling if needed
+    ".cm-search > button[name='close']": {
+      marginLeft: 'auto', // Push close button to the far right
+      padding: '5px', // Make it smaller padding
+      border: 'none',
+      background: 'transparent',
+      boxShadow: 'none',
+      color: '#6b7280', // text-gray-500
+    },
+    ".cm-search > button[name='close']:hover": {
+      background: '#f3f4f6', // bg-gray-100
+      color: '#1f2937', // text-gray-800
+    }
 
   })
 ];
@@ -724,8 +725,8 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
         title: newTitle
       };
     });
-     // No need to call showNotification here, EditableProjectName can handle it
-     // or pass a dedicated notification function prop if preferred.
+    // No need to call showNotification here, EditableProjectName can handle it
+    // or pass a dedicated notification function prop if preferred.
   }, [setProjectData]); // Dependency: setProjectData
 
   // Helper function to show notifications
@@ -1880,7 +1881,7 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
           );
           const filesSnapshot = await getDocs(filesQuery);
           if (!filesSnapshot.empty) {
-             filesList = filesSnapshot.docs.map(doc => ({
+            filesList = filesSnapshot.docs.map(doc => ({
               id: doc.id,
               ...(doc.data() as any),
               name: doc.data()._name_ || doc.data().name || "Untitled", // Prioritize _name_
@@ -1913,40 +1914,40 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
       setFiles(filesList);
 
       // Select default file if none selected OR current is gone
-       const currentFileExists = filesList.some(f => f.id === currentFileId);
-       if (!currentFileId || !currentFileExists) {
-          if (filesList.length > 0) {
-             const mainTex = filesList.find(f => f.name === 'main.tex');
-             const firstTex = filesList.find(f => f.name?.toLowerCase().endsWith('.tex'));
-             const fileToSelect = mainTex || firstTex || filesList[0];
-             // Only call handleFileSelect if necessary to avoid loops
-             if(currentFileId !== fileToSelect.id) {
-                await handleFileSelect(fileToSelect.id, fileToSelect.name, fileToSelect.content || "");
-             } else if (!currentFileExists) {
-                // If current file is gone, but was already the default, reset state
-                 setCurrentFileId(null);
-                 setCurrentFileName("");
-                 setCode("");
-                 setIsSaved(true);
-             }
-          } else {
-               // No files exist at all
-               setCurrentFileId(null);
-               setCurrentFileName("");
-               setCode("");
-               setIsSaved(true);
+      const currentFileExists = filesList.some(f => f.id === currentFileId);
+      if (!currentFileId || !currentFileExists) {
+        if (filesList.length > 0) {
+          const mainTex = filesList.find(f => f.name === 'main.tex');
+          const firstTex = filesList.find(f => f.name?.toLowerCase().endsWith('.tex'));
+          const fileToSelect = mainTex || firstTex || filesList[0];
+          // Only call handleFileSelect if necessary to avoid loops
+          if (currentFileId !== fileToSelect.id) {
+            await handleFileSelect(fileToSelect.id, fileToSelect.name, fileToSelect.content || "");
+          } else if (!currentFileExists) {
+            // If current file is gone, but was already the default, reset state
+            setCurrentFileId(null);
+            setCurrentFileName("");
+            setCode("");
+            setIsSaved(true);
           }
-       } else {
-          // Current file still exists, refresh its content if needed
-          const currentFileInfo = filesList.find(f => f.id === currentFileId);
-          if (currentFileInfo && currentFileInfo.content !== code && !isImageFile(currentFileInfo.name) && !isSaved) {
-              // Optional: Maybe only reload if saved? Or prompt user?
-              // For now, let's assume refresh should reflect latest saved state
-              // setCode(currentFileInfo.content || "");
-              // setIsSaved(true);
-              console.log("File content potentially differs after refresh, but keeping unsaved editor state.");
-          }
-       }
+        } else {
+          // No files exist at all
+          setCurrentFileId(null);
+          setCurrentFileName("");
+          setCode("");
+          setIsSaved(true);
+        }
+      } else {
+        // Current file still exists, refresh its content if needed
+        const currentFileInfo = filesList.find(f => f.id === currentFileId);
+        if (currentFileInfo && currentFileInfo.content !== code && !isImageFile(currentFileInfo.name) && !isSaved) {
+          // Optional: Maybe only reload if saved? Or prompt user?
+          // For now, let's assume refresh should reflect latest saved state
+          // setCode(currentFileInfo.content || "");
+          // setIsSaved(true);
+          console.log("File content potentially differs after refresh, but keeping unsaved editor state.");
+        }
+      }
 
 
       setError(null);
@@ -1958,9 +1959,9 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
     } finally {
       setLoading(false); // Ensure loading is set to false
     }
-  // --- Dependencies for refreshFilesAndProject ---
-  // Include all state and props used inside this function
-  // Be careful with 'code' and 'isSaved' to avoid excessive refreshes if not needed
+    // --- Dependencies for refreshFilesAndProject ---
+    // Include all state and props used inside this function
+    // Be careful with 'code' and 'isSaved' to avoid excessive refreshes if not needed
   }, [projectId, userId, currentFileId, handleFileSelect]); // Adjusted dependencies
 
 
@@ -2154,9 +2155,9 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
     // Find the original item *before* attempting the update
     const originalItemIndex = files.findIndex(f => f.id === itemIdToRename);
     if (originalItemIndex === -1) {
-        console.error("Item to rename not found in local state:", itemIdToRename);
-        handleRenameCancel();
-        return; // Item not found locally
+      console.error("Item to rename not found in local state:", itemIdToRename);
+      handleRenameCancel();
+      return; // Item not found locally
     }
     const originalItem = files[originalItemIndex];
 
@@ -2168,15 +2169,15 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
 
     // TODO: Add check here if the new name already exists in the same parent directory
     const nameExists = files.some(f =>
-        f.id !== itemIdToRename &&
-        f.parentId === originalItem.parentId && // Check same parent
-        f.name.toLowerCase() === finalName.toLowerCase()
+      f.id !== itemIdToRename &&
+      f.parentId === originalItem.parentId && // Check same parent
+      f.name.toLowerCase() === finalName.toLowerCase()
     );
     if (nameExists) {
-        showNotification(`An item named "${finalName}" already exists in this folder.`, "error");
-        // Don't cancel editing, let the user fix the name
-        // handleRenameCancel();
-        return;
+      showNotification(`An item named "${finalName}" already exists in this folder.`, "error");
+      // Don't cancel editing, let the user fix the name
+      // handleRenameCancel();
+      return;
     }
 
 
@@ -2216,8 +2217,8 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
     } finally {
       handleRenameCancel(); // Reset renaming UI state
     }
-  // --- CHANGE: Updated Dependencies ---
-  // Removed refreshFilesAndProject, added setFiles, setCurrentFileName, currentFileId
+    // --- CHANGE: Updated Dependencies ---
+    // Removed refreshFilesAndProject, added setFiles, setCurrentFileName, currentFileId
   }, [renamingItem, files, projectId, currentFileId, handleRenameCancel, setFiles, setCurrentFileName, showNotification]);
 
   // Effect to focus input when renaming starts
@@ -2968,7 +2969,7 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
       }
       // Fallback to name sorting if order is missing or equal
       if ((a.order || 0) === (b.order || 0)) {
-         return a.name.localeCompare(b.name);
+        return a.name.localeCompare(b.name);
       }
       return (a.order || 0) - (b.order || 0); // Sort by order primarily
     });
@@ -2984,21 +2985,20 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
         <div key={item.id}>
           {/* --- CORRECTED: Added DnD Handlers and drag-over class --- */}
           <div
-             // Draggable Attributes
-             draggable // Make the entire item draggable
-             onDragStart={e => handleDragStart(e, item.id)}
-             onDragEnd={handleDragEnd} // Cleanup styles on drag end
+            // Draggable Attributes
+            draggable // Make the entire item draggable
+            onDragStart={e => handleDragStart(e, item.id)}
+            onDragEnd={handleDragEnd} // Cleanup styles on drag end
 
-             // Drop Target Attributes (Applied to all items, logic inside handlers filters)
-             onDragOver={e => handleDragOver(e, item.id, isFolder)}
-             onDragEnter={e => handleDragEnter(e, item.id, isFolder)}
-             onDragLeave={handleDragLeave}
-             onDrop={e => handleDrop(e, item.id, isFolder)} // Drop on files or folders
+            // Drop Target Attributes (Applied to all items, logic inside handlers filters)
+            onDragOver={e => handleDragOver(e, item.id, isFolder)}
+            onDragEnter={e => handleDragEnter(e, item.id, isFolder)}
+            onDragLeave={handleDragLeave}
+            onDrop={e => handleDrop(e, item.id, isFolder)} // Drop on files or folders
 
-             // Combine className logic including drag-over state
-            className={`flex items-center py-1 pr-2 rounded group ${
-                isActive && !renamingItem.id ? 'bg-blue-100 text-blue-700 font-medium' : ''
-               } ${renamingItem.id !== item.id ? 'hover:bg-gray-100 text-gray-700 cursor-pointer' : 'bg-white'}
+            // Combine className logic including drag-over state
+            className={`flex items-center py-1 pr-2 rounded group ${isActive && !renamingItem.id ? 'bg-blue-100 text-blue-700 font-medium' : ''
+              } ${renamingItem.id !== item.id ? 'hover:bg-gray-100 text-gray-700 cursor-pointer' : 'bg-white'}
                ${isDragging === item.id ? 'opacity-40' : ''}
                ${dragOverTarget === item.id && (isFolder || parentId === null /* Allow drop on root file/folder position */) ? 'drag-over' : ''} `} // drag-over class added
             style={{ paddingLeft: `${paddingLeft}px` }}
@@ -3059,9 +3059,8 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
               />
             ) : (
               <span
-                className={`text-sm truncate flex-grow ${
-                  isActive ? 'text-blue-700' : 'text-gray-800'
-                }`}
+                className={`text-sm truncate flex-grow ${isActive ? 'text-blue-700' : 'text-gray-800'
+                  }`}
               >
                 {item.name}
               </span>
@@ -3150,14 +3149,10 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
 
   // Render loading state
   if (loading) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-gray-900">
-        <div className="flex flex-col items-center">
-          <Loader className="h-10 w-10 text-blue-500 animate-spin" />
-          <p className="mt-4 text-gray-400">Loading editor...</p>
-        </div>
-      </div>
-    );
+    <EditorLoadingScreen
+      projectName="Your Project Name"
+      status="Loading editor..."
+    />
   }
 
   // Render error state
@@ -3207,13 +3202,13 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
           </button>
           <div className="h-5 border-l border-gray-300"></div> {/* Lighter separator */}
           {/* Project Name */}
-           <EditableProjectName
-             projectId={projectId}
-             initialTitle={projectData?.title || "Untitled Project"}
-             className="font-medium text-gray-800 text-base"
-             // --- CHANGE: Pass the update handler ---
-             onTitleChange={handleProjectTitleChange}
-           />
+          <EditableProjectName
+            projectId={projectId}
+            initialTitle={projectData?.title || "Untitled Project"}
+            className="font-medium text-gray-800 text-base"
+            // --- CHANGE: Pass the update handler ---
+            onTitleChange={handleProjectTitleChange}
+          />
           {/* File Name Indicator */}
           {currentFileName && (
             <div className="flex items-center text-sm text-gray-500 ml-2">
@@ -3231,8 +3226,8 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
             <button
               onClick={() => setViewMode('code')}
               className={`cursor-pointer p-2 transition-colors duration-150 ${viewMode === 'code'
-                  ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600 border-r border-gray-200'
-                  : 'text-gray-500 hover:bg-gray-50'
+                ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600 border-r border-gray-200'
+                : 'text-gray-500 hover:bg-gray-50'
                 }`}
               title="Editor Only"
             >
@@ -3241,8 +3236,8 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
             <button
               onClick={() => setViewMode('split')}
               className={`cursor-pointer p-2 transition-colors duration-150 ${viewMode === 'split'
-                  ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600 border-r border-gray-200'
-                  : 'text-gray-500 hover:bg-gray-50'
+                ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600 border-r border-gray-200'
+                : 'text-gray-500 hover:bg-gray-50'
                 }`}
               title="Split View"
             >
@@ -3251,8 +3246,8 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
             <button
               onClick={() => setViewMode('pdf')}
               className={`cursor-pointer p-2 transition-colors duration-150 ${viewMode === 'pdf'
-                  ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600'
-                  : 'text-gray-500 hover:bg-gray-50'
+                ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600'
+                : 'text-gray-500 hover:bg-gray-50'
                 }`}
               title="Preview Only"
             >
@@ -3267,8 +3262,8 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
             onClick={handleSave}
             disabled={isSaved || !currentFileId || isImageFile(currentFileName)}
             className={`flex items-center px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-1 ${isSaved || !currentFileId || isImageFile(currentFileName)
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
-                : 'cursor-pointer bg-blue-600 text-white hover:bg-blue-700 border border-blue-600 focus:ring-blue-500'
+              ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
+              : 'cursor-pointer bg-blue-600 text-white hover:bg-blue-700 border border-blue-600 focus:ring-blue-500'
               }`}
             title="Save (Ctrl+S)"
           >
@@ -3281,9 +3276,9 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
             onClick={handleCompile}
             disabled={isCompiling || !currentFileId || !currentFileName?.toLowerCase().endsWith('.tex')}
             className={`cursor-pointer flex items-center px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-1 ${isCompiling || !currentFileId || !currentFileName?.toLowerCase().endsWith('.tex')
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200' // Disabled state
-                // Updated Enabled State: Use a gray shade
-                : 'bg-gray-600 text-white hover:bg-gray-700 border border-gray-600 focus:ring-gray-500'
+              ? 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200' // Disabled state
+              // Updated Enabled State: Use a gray shade
+              : 'bg-gray-600 text-white hover:bg-gray-700 border border-gray-600 focus:ring-gray-500'
               }`}
             title="Compile (Ctrl+Enter)"
           >
@@ -3294,8 +3289,8 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
             onClick={handleDownloadPdf}
             disabled={!pdfData}
             className={`cursor-pointer p-1.5 rounded-lg text-sm font-medium transition-all duration-150 shadow-sm border focus:outline-none focus:ring-2 focus:ring-offset-1 ${!pdfData
-                ? 'bg-gray-100 text-gray-400 cursor-not-allowed border-gray-200'
-                : 'bg-white text-gray-600 hover:bg-gray-50 border-gray-300 hover:border-gray-400 focus:ring-indigo-500'
+              ? 'bg-gray-100 text-gray-400 cursor-not-allowed border-gray-200'
+              : 'bg-white text-gray-600 hover:bg-gray-50 border-gray-300 hover:border-gray-400 focus:ring-indigo-500'
               }`}
             title="Download PDF"
           >
@@ -3587,107 +3582,107 @@ const EnhancedLatexEditor: React.FC<EnhancedLatexEditorProps> = ({ projectId, us
       </div>
 
 
-{/* Context Menu */}
-{contextMenu && (
-  <div
-    ref={contextMenuRef}
-    style={{
-      position: 'fixed',
-      left: `${contextMenu.x}px`,
-      top: `${contextMenu.y}px`,
-      zIndex: 50
-    }}
-    className="bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[160px]"
-  >
-    {/* File Actions */}
-    {files.find(f => f.id === contextMenu.itemId)?.type === 'file' && (
-      <>
-        <button
-          onClick={() => {
-            const item = files.find(f => f.id === contextMenu.itemId);
-            if (item) handleFileSelect(item.id, item.name, item.content);
-            setContextMenu(null);
+      {/* Context Menu */}
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+            zIndex: 50
           }}
-          className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
+          className="bg-white rounded-md shadow-lg border border-gray-200 py-1 min-w-[160px]"
         >
-          <FileText className="h-4 w-4 mr-2 text-gray-500" />
-          Open File
-        </button>
+          {/* File Actions */}
+          {files.find(f => f.id === contextMenu.itemId)?.type === 'file' && (
+            <>
+              <button
+                onClick={() => {
+                  const item = files.find(f => f.id === contextMenu.itemId);
+                  if (item) handleFileSelect(item.id, item.name, item.content);
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
+              >
+                <FileText className="h-4 w-4 mr-2 text-gray-500" />
+                Open File
+              </button>
 
-        {/* Rename Action for File */}
-        <button
-          onClick={() => {
-            handleStartRename(
-              contextMenu.itemId,
-              files.find(f => f.id === contextMenu.itemId)?.name || ''
-            );
-            setContextMenu(null);
-          }}
-          className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
-        >
-          <Edit2 className="h-4 w-4 mr-2 text-gray-500" />
-          Rename
-        </button>
-      </>
-    )}
+              {/* Rename Action for File */}
+              <button
+                onClick={() => {
+                  handleStartRename(
+                    contextMenu.itemId,
+                    files.find(f => f.id === contextMenu.itemId)?.name || ''
+                  );
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
+              >
+                <Edit2 className="h-4 w-4 mr-2 text-gray-500" />
+                Rename
+              </button>
+            </>
+          )}
 
-    {/* Folder Actions */}
-    {files.find(f => f.id === contextMenu.itemId)?.type === 'folder' && (
-      <>
-        <button
-          onClick={() => {
-            handleCreateFile(contextMenu.itemId);
-            setContextMenu(null);
-          }}
-          className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
-        >
-          <FilePlus className="h-4 w-4 mr-2 text-gray-500" />
-          New File Here
-        </button>
-        <button
-          onClick={() => {
-            handleCreateFolder(contextMenu.itemId);
-            setContextMenu(null);
-          }}
-          className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
-        >
-          <FolderPlus className="h-4 w-4 mr-2 text-gray-500" />
-          New Folder Here
-        </button>
+          {/* Folder Actions */}
+          {files.find(f => f.id === contextMenu.itemId)?.type === 'folder' && (
+            <>
+              <button
+                onClick={() => {
+                  handleCreateFile(contextMenu.itemId);
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
+              >
+                <FilePlus className="h-4 w-4 mr-2 text-gray-500" />
+                New File Here
+              </button>
+              <button
+                onClick={() => {
+                  handleCreateFolder(contextMenu.itemId);
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
+              >
+                <FolderPlus className="h-4 w-4 mr-2 text-gray-500" />
+                New Folder Here
+              </button>
 
-        {/* Rename Action for Folder */}
-        <button
-          onClick={() => {
-            handleStartRename(
-              contextMenu.itemId,
-              files.find(f => f.id === contextMenu.itemId)?.name || ''
-            );
-            setContextMenu(null);
-          }}
-          className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
-        >
-          <Edit2 className="h-4 w-4 mr-2 text-gray-500" />
-          Rename
-        </button>
-      </>
-    )}
+              {/* Rename Action for Folder */}
+              <button
+                onClick={() => {
+                  handleStartRename(
+                    contextMenu.itemId,
+                    files.find(f => f.id === contextMenu.itemId)?.name || ''
+                  );
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-1.5 text-sm flex items-center hover:bg-gray-100 text-gray-700"
+              >
+                <Edit2 className="h-4 w-4 mr-2 text-gray-500" />
+                Rename
+              </button>
+            </>
+          )}
 
-    {/* Separator */}
-    <div className="border-t border-gray-200 my-1 mx-2"></div>
+          {/* Separator */}
+          <div className="border-t border-gray-200 my-1 mx-2"></div>
 
-    {/* Delete Action */}
-    <button
-      onClick={() => {
-        handleDeleteItem(contextMenu.itemId);
-        setContextMenu(null);
-      }}
-      className="w-full text-left px-3 py-1.5 text-sm flex items-center text-red-600 hover:bg-red-50"
-    >
-      <Trash2 className="h-4 w-4 mr-2" />
-      Delete
-    </button>
-  </div>
-)}
+          {/* Delete Action */}
+          <button
+            onClick={() => {
+              handleDeleteItem(contextMenu.itemId);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 text-sm flex items-center text-red-600 hover:bg-red-50"
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            Delete
+          </button>
+        </div>
+      )}
 
       {/* Upload Modal */}
       {isUploadModalOpen && (

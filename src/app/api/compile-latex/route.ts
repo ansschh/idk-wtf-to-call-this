@@ -1,6 +1,6 @@
 // app/api/compile-latex/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { getDoc, doc, collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
 // Get the LaTeX server URL from environment variables with fallback

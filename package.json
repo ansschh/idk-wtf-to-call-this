@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "next dev",
     "lint": "next lint",
     "setup": "node setup-latex.js"
   },
@@ -29,7 +29,7 @@
     "diff": "^7.0.0",
     "firebase": "^11.4.0",
     "firebase-admin": "^13.2.0",
-    "framer-motion": "^12.5.0",
+    "framer-motion": "^12.7.4",
     "katex": "^0.16.21",
     "latex.js": "^0.12.6",
     "lucide-react": "^0.479.0",
